@@ -1,0 +1,16 @@
+# 小星（virtual avatar）生产代码依赖
+# 安装：pip install -r requirements.txt
+#
+# 注意：语音合成 CosyVoice3 不是 pip 包——
+#   git clone https://github.com/FunAudioLLM/CosyVoice.git 并下载
+#   Fun-CosyVoice3-0.5B 模型后，把源码目录加进 sys.path（见 voice/tts.py）。
+# 摄像头视觉（vision/camera.py）使用 OpenAI 兼容的多模态接口看图。
+
+numpy==1.26.4
+openai==3.41.0
+langgraph==1.2.18
+python-dotenv==1.2.4
+soundfile==0.12.1
+sounddevice==0.5.6
+librosa==0.10.2          # 情绪韵律的音高移位（voice/prosody.py）
+opencv-python==4.10.0.84 # vision/camera.py 拍照

@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>识海 · 小星的记忆星图</title>
+<link rel="stylesheet" href="/sea.css">
+</head>
+<body>
+<canvas id="sea"></canvas>
+
+<div class="hud">
+  <div class="hud-title">
+    <span class="glyph">☯</span>
+    <div>
+      <div class="title">识海 · 记忆星图</div>
+      <div class="sub" id="stats">记忆 0 颗星 · 连接 0 缕</div>
+    </div>
+  </div>
+  <div class="hud-right">
+    <div class="mood" id="moodLine">心情：平静</div>
+    <a class="back" href="/">← 回到对话</a>
+  </div>
+</div>
+
+<div class="legend">
+  <span><i class="dot hub"></i>实体（人/枢纽）</span>
+  <span><i class="dot warm"></i>暖记忆</span>
+  <span><i class="dot cool"></i>冷记忆</span>
+  <span><i class="dot neutral"></i>中性</span>
+  <span><i class="line share"></i>同源</span>
+  <span><i class="line link"></i>同事</span>
+  <span><i class="line sim"></i>相似</span>
+  <span><i class="line rel"></i>关系</span>
+  <span><i class="line co"></i>同话</span>
+</div>
+
+<div class="tip" id="tip" hidden></div>
+<div class="hint">拖拽旋转 · 滚轮缩放 · 悬停看记忆内容 · 和小星说话时，被点亮的记忆会在这里发光</div>
+
+<script src="/vendor/three.min.js"></script>
+<script src="/sea.js"></script>
+</body>
+</html>

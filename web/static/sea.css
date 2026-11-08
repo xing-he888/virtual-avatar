@@ -1,0 +1,55 @@
+html, body { margin: 0; height: 100%; overflow: hidden; background: #05060e; }
+body {
+  font: 13px/1.6 "Segoe UI", "Microsoft YaHei", sans-serif;
+  color: #cfd3ea; user-select: none;
+}
+#sea { position: fixed; inset: 0; display: block; cursor: grab; }
+#sea:active { cursor: grabbing; }
+
+.hud {
+  position: fixed; top: 0; left: 0; right: 0; display: flex;
+  justify-content: space-between; align-items: flex-start;
+  padding: 16px 20px; pointer-events: none;
+}
+.hud-title { display: flex; gap: 12px; align-items: center; }
+.glyph {
+  font-size: 26px; color: #9db4ff; text-shadow: 0 0 18px #4a6bff;
+}
+.title { font-size: 17px; font-weight: 600; letter-spacing: 2px; }
+.sub { font-size: 12px; color: #7f86a8; }
+.hud-right { text-align: right; }
+.mood { font-size: 13px; color: #aeb6d8; text-shadow: 0 0 12px currentColor; }
+.back {
+  display: inline-block; margin-top: 6px; color: #8f9ac4; font-size: 12px;
+  text-decoration: none; border: 1px solid #2c3358; border-radius: 999px;
+  padding: 2px 12px; pointer-events: auto;
+}
+.back:hover { color: #dfe4ff; border-color: #4a5588; }
+
+.legend {
+  position: fixed; left: 20px; bottom: 16px; display: flex; gap: 14px;
+  font-size: 11px; color: #7f86a8; flex-wrap: wrap;
+}
+.legend i { display: inline-block; vertical-align: -1px; margin-right: 4px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; }
+.dot.hub { background: #ffe9a8; box-shadow: 0 0 6px #ffe9a8; }
+.dot.warm { background: #ffd9a0; box-shadow: 0 0 6px #ffd9a0; }
+.dot.cool { background: #7aa8ff; box-shadow: 0 0 6px #7aa8ff; }
+.dot.neutral { background: #cdd6ff; box-shadow: 0 0 6px #cdd6ff; }
+.line { width: 16px; height: 0; border-top: 1px solid; }
+.line.share { border-color: #5a6db8; }
+.line.link { border-color: #d8b86a; }
+.line.sim { border-color: #a86ad8; }
+.line.rel { border-color: #ffb27a; }
+.line.co { border-color: #4a5588; }
+
+.hint {
+  position: fixed; right: 20px; bottom: 16px; font-size: 11px; color: #565d80;
+}
+.tip {
+  position: fixed; max-width: 300px; background: #121528ee;
+  border: 1px solid #353d6e; border-radius: 10px; padding: 8px 12px;
+  font-size: 12px; color: #dfe3ff; pointer-events: none; z-index: 5;
+  box-shadow: 0 0 24px #0a1030;
+}
+.tip .meta { color: #7f86a8; font-size: 11px; margin-top: 2px; }

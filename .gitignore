@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.pyc
+
+# 生成的语音文件
+*.wav
+
+#api密钥文件
+*.env
+
+# ============================================================
+# 以下为 2026-11-01 补充：区分「源」与「产物 / 私有数据」
+# 原则：能重新跑出来的不进 git，重跑不出来的进 git。
+# ============================================================
+
+# ---- 私有数据：真实聊天记录、解密库、密钥。绝不外传，也绝不进库 ----
+wxbak/decrypted/
+wxbak/bin/
+wxbak/keys.json
+wxbak/_tmp/
+# 144 份会话导出（19_export_md.py 可重建；本体是私人聊天，不进库）
+wxbak/md/
+
+# ---- 密钥材料：这些文件里存着数据库解密密钥，任何情况下都不进库 ----
+# manifest.json 记录每个 .db 的 key；work/keyinfo.txt 是原始密钥表
+wxbak/manifest.json
+wxbak/work/
+wxbak/_test.txt
+
+# ---- 抓取下来的第三方仓库：不是我们的代码，要重现请按 README 重新拉 ----
+wxbak/repo/
+
+# ---- 可重建的产物 ----
+# SQLite 库：build_kb.py / scale_kb.py / conflict_kb.py 一条命令重建
+*.db
+*.db-shm
+*.db-wal
+# embedding 矩阵：build_vec.py 重建（46 ms/条，783 条约 36 秒）
+*.npy
+
+# ---- 实验输出：可重跑，但保留小体积的结论 json 便于对照 ----
+# 大文件（>1 MB）已在下面按名字排除
+lab/out/e3.json
+lab/out/e11.json
+lab/out/e23a.json
+lab/out/e45.json
+lab/out/e45b.json
+lab/out/e60.json
+lab/out/e61.json
+lab/out/wx_wrb_probe.txt
+
+# ---- 系统垃圾 ----
+Thumbs.db
+desktop.ini
+.DS_Store
+.venv/
+venv/
+
+# ---- 网页聊天：API Key 配置只存本机，绝不进库 ----
+web/api_settings.local.json
+# 聊天页的记忆库
+data/

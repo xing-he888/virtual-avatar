@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小星 · 带记忆的聊天</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main class="wrap">
+  <header class="topbar">
+    <div class="who">
+      <div class="avatar" id="avatar">🙂</div>
+      <div class="who-text">
+        <div class="name">小星 <span class="state-chip" id="moodLabel">心情：平静</span></div>
+        <div class="sub" id="stateSub">刚醒 · 记忆 0 条</div>
+      </div>
+    </div>
+    <div class="tools">
+      <div class="dial-box" title="小星此刻在 效价×唤醒 平面上的位置与轨迹">
+        <canvas id="dial" width="96" height="72"></canvas>
+        <div class="dial-legend"><span>↑激动</span><span>←难受 愉悦→</span></div>
+      </div>
+      <a class="gear" id="btnSea" href="/sea" title="识海：记忆星图（3D）">🌌</a>
+      <button class="gear" id="btnMem" title="记忆面板：查看 / 修正 / 撤回小星记住的事">🗂</button>
+      <button class="gear" id="btnSettings" title="API Key 等设置">⚙</button>
+    </div>
+  </header>
+
+  <section class="chat" id="chat"></section>
+
+  <footer class="composer">
+    <textarea id="input" rows="1" placeholder="跟小星说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
+    <button id="btnAssoc" class="assoc" title="拿输入框里的话题做联想：激活扩散 + 联想循环">🧠</button>
+    <button id="btnSend" class="send">发送</button>
+  </footer>
+  <div class="foot-note">
+    记忆与情绪在本地（<code>data/xiaoxing.db</code>）·
+    <span id="llmState">检查 API Key…</span>
+  </div>
+</main>
+
+<!-- 设置弹窗：留给你配置 API Key 的地方 -->
+<div class="mask" id="mask" hidden>
+  <div class="modal">
+    <h2>设置 <button class="close" id="btnClose">✕</button></h2>
+    <label>API Key
+      <input id="setKey" type="password" placeholder="粘贴 DashScope / 兼容接口的 Key（留空=清除）">
+    </label>
+    <label>接口地址 Base URL
+      <input id="setUrl" type="text" placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1">
+    </label>
+    <label>模型
+      <input id="setModel" type="text" placeholder="deepseek-v4.1-flash">
+    </label>
+    <p class="hint">Key 只保存在本机 <code>web/api_settings.local.json</code>（已进 .gitignore，不进 git、不上传）。
+       也可以直接放 <code>.env</code> 的 <code>ALIYUN_APIKEY</code>。</p>
+    <div class="modal-actions">
+      <button id="btnTest" class="ghost">测试连接</button>
+      <span id="testResult" class="test-result"></span>
+      <button id="btnSave" class="primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 记忆面板：修正 / 撤回小星记住的事实（双时态：改值保留历史） -->
+<div class="mask" id="memMask" hidden>
+  <div class="modal mem-modal">
+    <h2>小星的记忆 <button class="close" id="btnMemClose">✕</button></h2>
+    <p class="hint">记错了就改：<b>改值</b>是正常修正（旧值进历史，还能回放「当时以为」）；
+      <b>撤回</b>=这条整个记错了，从此不再提起。撤回不删原话，经历层永远留底。</p>
+    <div class="mem-list" id="memList">加载中…</div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

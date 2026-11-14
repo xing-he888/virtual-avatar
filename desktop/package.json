@@ -1,0 +1,15 @@
+{
+  "name": "xiaoxing-desktop",
+  "version": "1.0.0",
+  "description": "小星桌面壳：Electron 包装 Python 后端（web/server.py）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "33.2.0"
+  },
+  "allowScripts": {
+    "electron@33.2.0": true
+  }
+}

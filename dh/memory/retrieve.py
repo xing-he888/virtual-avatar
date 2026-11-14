@@ -22,7 +22,7 @@ class Answer:
     """一次事实问答的完整出处。is_stale/is_guess 决定措辞，value 是内容。"""
 
     def __init__(self, values, rel=None, sources=None, stale=False, abstain=False,
-                 degraded=False, fact_ids=None):
+                 degraded=False, fact_ids=None, retracted=False):
         self.values = values            # list[str]
         self.rel = rel                  # 来源分级（最高可信的那个）
         self.sources = sources or []    # 最早来源（谁最早说的）
@@ -30,6 +30,8 @@ class Answer:
         self.abstain = abstain
         self.degraded = degraded
         self.fact_ids = fact_ids or []  # 支撑本回答的事实行（动态修正锚定用）
+        self.retracted = retracted      # 现行值为空、只有本人改口撤回的行
+                                        # （「你之前说过X，后来你自己改口了」）
 
     def phrase(self, directness=None):
         """把 (值, 来源) 说成一句人话。
@@ -48,6 +50,10 @@ class Answer:
         if self.abstain or not self.values:
             return config.ABSTAIN_PHRASE
         vals = "和".join(self.values)
+        if self.retracted:
+            # 本人改口 ≠ 记错：不是「我不确定」，是「我记得你的更正」——
+            # 拟人细节在这里，失忆式跳过反而吓人（2026-11 改口协议审查 C5）
+            return config.RETRACTED_PHRASE.format(old=vals)
         if self.stale:
             return config.EXPIRED_PHRASE.format(old=vals)
         # D 低 = 没把握：先垫一句再给内容。D 高不加（没有可加的余地：
@@ -100,7 +106,19 @@ class Retriever:
         old = self.store.superseded_values(entity, predicate)
         if old:
             return Answer([old[0][0]], rel=None, stale=True, degraded=True)
+        # 只剩本人改口撤回的行：不是弃权，是「记着你的更正」（近窗内）
+        gone = self.store.retracted_values(
+            entity, predicate,
+            since=(asof if asof is not None else self._now())
+                  - config.RETRACTED_CONTEXT_DAYS * 86400.0)
+        if gone:
+            return Answer([g["value"] for g in gone], rel=None, degraded=True,
+                          retracted=True)
         return Answer([], abstain=True)
+
+    def _now(self):
+        import time
+        return time.time()
 
     def _sources(self, rows):
         """来源留最早那条 [extract.py 注释 2]。"""
@@ -237,7 +255,7 @@ class Retriever:
         order = np.argsort(-lw)[:n]
         return [("fact", fids[i]) for i in order]
 
-    def _pool_emo(self, t_now, n=30, mood=0.0):
+    def _pool_emo(self, t_now, n=30, mood=0.0, n_trait=None):
         """情绪路候选（**情节层**）：带效价的经历，按「时间核 × 情绪一致」排。
 
         情节流才是带情绪标签的层 [DESIGN §2]；事实表按值去重后一条住院只剩
@@ -258,6 +276,12 @@ class Retriever:
             入场增益  lw += EMO_SAL_GAIN·(sal-BASE)——强情绪情节更容易想起
             遗忘减速  age_eff = age·exp(-SAL_AGE_SCALE·(sal-BASE))——强情绪
                       情节老化更慢（闪光灯记忆效应）
+
+        性格杠杆（用户提案「存取对记忆加权」的性格半边，取侧）：
+            n_trait = 特质 N（神经质，绝对值，成长层供数）。负性情节的
+            有效年龄 ×exp(−GROWTH_N_AGE_SCALE·N·max(−valence,0))——敏感的
+            人忘不掉伤心事、皮实的人翻篇更快；对正效价行恒为 1（皮实不
+            对好事失忆）。None = 调用方没有成长层（裸测试），不加权。
         """
         rows = self.store.con.execute(
             "SELECT obs_id, t, valence, salience FROM obs "
@@ -267,12 +291,16 @@ class Retriever:
             return []
         sal = np.array([config.EMO_SAL_BASE if r["salience"] is None
                         else float(r["salience"]) for r in rows])
+        vals = np.array([float(r["valence"] or 0.0) for r in rows])
         ages = np.array([max((t_now or 0.0) - r["t"], 0.0) for r in rows])
         ages = ages * np.exp(-config.SAL_AGE_SCALE * (sal - config.EMO_SAL_BASE))
+        if n_trait:
+            hurt = np.clip(-vals, 0.0, 1.0)       # 只弯负效价记忆的曲线
+            ages = ages * np.exp(-config.GROWTH_N_AGE_SCALE
+                                 * float(n_trait) * hurt)
         lw = kernel.lognormal_logw(ages, S=self.S or config.KERNEL_S_DEFAULT)
         lw = lw + config.EMO_SAL_GAIN * (sal - config.EMO_SAL_BASE)
         if mood:
-            vals = np.array([float(r["valence"] or 0.0) for r in rows])
             lw = lw + mood * vals * config.EMO_POOL_GAIN
         order = np.argsort(-lw)[:n]
         return [("obs", rows[i]["obs_id"]) for i in order]
@@ -398,7 +426,7 @@ class Retriever:
         return out, added
 
     def recall(self, query_text=None, query_vec=None, mood=0.0, t_now=None,
-               k_gate=None, seed_ids=None):
+               k_gate=None, seed_ids=None, n_trait=None):
         """三路召回 + 硬门槛（切在混合分上）[AUDIT §8 三步 + DESIGN §3.2 三路]。
 
         三条**平行**的召回路各自往候选池里放东西：
@@ -406,6 +434,7 @@ class Retriever:
             时间路  时间核 top-30（事实层）     「上次」「那天」
             情绪路  高效价经历 top-30（情节层）  「心情差想起糟心事」
         候选池内 z 标准化混合打分，硬门槛切前 k_gate 条。
+        n_trait：特质 N（取侧性格杠杆，见 _pool_emo）；None 不加权。
         返回 [(kind, row_id, score)]；抽样是反应层的事。
         """
         k_gate = k_gate or config.GATE_K
@@ -429,7 +458,7 @@ class Retriever:
         sim_map, graph_added = self._expand_on_graph(sim_map)
         cand = sorted(sim_map.keys(), key=lambda k: -sim_map[k])
         cand += self._pool_recent(t_now)
-        cand += self._pool_emo(t_now, mood=mood)
+        cand += self._pool_emo(t_now, mood=mood, n_trait=n_trait)
         if seed_ids:
             cand += [("fact", f) for f in seed_ids]
         cand = list(dict.fromkeys(cand))

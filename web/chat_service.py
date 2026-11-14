@@ -49,6 +49,8 @@ PAD_ANCHORS = [
     ("低落", (-0.7, -0.4, -0.3)), ("沮丧", (-0.8, -0.1, -0.4)),
     ("焦虑", (-0.5, 0.6, -0.7)), ("恼火", (-0.6, 0.7, -0.3)),
     ("紧张", (-0.3, 0.5, -0.6)), ("委屈", (-0.45, 0.15, -0.6)),
+    ("自责", (-0.55, 0.35, 0.35)),          # 搞砸了的是自己（D 升：我有控制权）
+    ("不安", (0.1, 0.8, -0.2)),             # 高唤醒轻微正效价：被吓到后的余悸
 ]
 
 
@@ -214,6 +216,101 @@ class ChatServer:
                     acc = {k: min(1.0, v / 3.0) for k, v in w["seen"].items()}
                     self.push_activation("游移", acc)
 
+    # ------------------------------------------------ 前端 UI（小星可自改）
+    # 安全红线：工具参数只收枚举名和钳制数值，绝不收自由 CSS/HTML——
+    # LLM 幻觉再离谱也注入不了页面。真值入 meta（ui_config），前端轮询
+    # /api/state 带回应用：网页版/桌面版下一拍同步生效，重启保留。
+    # 安全红线：工具参数只收枚举名和钳制数值，绝不收自由 CSS/HTML——
+    # LLM 幻觉再离谱也注入不了页面。真值入 meta（ui_config），前端轮询
+    # /api/state 带回应用：网页版/桌面版下一拍同步生效，重启保留。
+    # 2026-11 二次改版（用户裁决：照 DeepSeek 网页版，纯白/纯黑，不搞花活）：
+    # 每个预设是一套**完整 token 主题**（底色/表层面板/气泡/文字/描边/强调色
+    # 成套下发，前端 dumb-apply）——默认「简白」对标 DeepSeek 浅色，「墨黑」
+    # 对标深色，其余四个是白底换强调色的轻变体。键名全部不动（已存配置兼容）。
+    _LIGHT = dict(  # 浅色主题公共面（DeepSeek 浅色口径）
+        **{"--bg-a": "#FFFFFF", "--bg-b": "#FFFFFF",
+           "--surface-top": "#FFFFFF", "--bubble-ai": "#F7F8FA",
+           "--bubble-user": "#EBEEF5", "--panel": "#FFFFFF", "--panel2": "#F5F6F8",
+           "--text": "#26272B", "--dim": "#90959B", "--line": "#E6E8EB",
+           "--accent-ink": "#FFFFFF", "--mask-bg": "rgba(15, 18, 25, 0.45)"}
+    )
+    _DARK = dict(   # 深色主题公共面（DeepSeek 深色口径）
+        **{"--bg-a": "#171719", "--bg-b": "#171719",
+           "--surface-top": "#1D1D20", "--bubble-ai": "#232327",
+           "--bubble-user": "#2B2B31", "--panel": "#1E1E21", "--panel2": "#26262B",
+           "--text": "#E8EAED", "--dim": "#9BA0A6", "--line": "#2E2E33",
+           "--accent-ink": "#FFFFFF", "--mask-bg": "rgba(0, 0, 0, 0.55)"}
+    )
+    UI_BACKGROUNDS = {
+        "deepspace": dict(name="简白", vars={**_LIGHT, "--accent": "#4D6BFE"}),
+        "ink":       dict(name="墨黑", vars={**_DARK, "--accent": "#6B84FF"}),
+        "aurora":    dict(name="极光", vars={**_LIGHT, "--accent": "#0E9F82"}),
+        "sunrise":   dict(name="暖阳", vars={**_LIGHT, "--accent": "#D97A2B"}),
+        "mist":      dict(name="晨雾", vars={**_LIGHT, "--bg-b": "#F4F6FA",
+                                             "--accent": "#3E6FD9"}),
+        "neon":      dict(name="蔷薇", vars={**_LIGHT, "--accent": "#D4527A"}),
+    }
+    UI_DEFAULTS = dict(avatar_emoji="🙂", avatar_hue=220, background="deepspace",
+                       intensity=0.6, mood_glow=0.5, star_density=0.5,
+                       avatar_img=0)   # 1=头像用 /avatar.jpg 图片（装图是用户
+                                       # 动作；LLM 只能开关，不能指路径——
+                                       # 与「只收枚举/数值」的安全红线一致）
+
+    def ui_config(self):
+        cfg = dict(self.UI_DEFAULTS)
+        raw = self.dh.store.get_meta("ui_config")
+        if raw:
+            try:
+                cfg.update(json.loads(raw))
+            except ValueError:
+                pass
+        return self._ui_resolved(cfg)
+
+    def _ui_resolved(self, cfg):
+        """把背景预设解析成 CSS 变量——前端只 dumb-apply，不做任何判断。"""
+        bg = self.UI_BACKGROUNDS.get(cfg.get("background"),
+                                     self.UI_BACKGROUNDS["deepspace"])
+        out = dict(cfg)
+        out["vars"] = dict(bg["vars"])
+        out["vars"]["--ui-intensity"] = float(cfg.get("intensity", 0.6))
+        out["bg_name"] = bg["name"]
+        return out
+
+    def set_ui(self, patch):
+        """应用一次 UI 修改：白名单校验 + 钳制 + meta 落盘。返回解析后的全量配置。
+
+        全程持 store.lock：调用方有两个——POST /api/ui handler（HTTP 线程）
+        和 langgraph 工具循环（LLM 线程，锁外跑）——都没持锁，而这里写
+        meta + commit，锁外 commit 会把聊天线程在途的部分事务提前提交
+        （子代理审查 P2-2）。"""
+        with self.dh.store.lock:
+            cfg = self.ui_config()
+            cfg.pop("vars", None)
+            cfg.pop("bg_name", None)
+            av = patch.get("avatar_emoji")
+            if av is not None:
+                av = str(av).strip()
+                if av and len(av) <= 8:
+                    cfg["avatar_emoji"] = av       # 单个 emoji/字符，防塞一整段话
+            if patch.get("avatar_hue") is not None:
+                try:
+                    cfg["avatar_hue"] = int(max(0, min(360, float(patch["avatar_hue"]))))
+                except (TypeError, ValueError):
+                    pass
+            if patch.get("background") in self.UI_BACKGROUNDS:
+                cfg["background"] = patch["background"]
+            if patch.get("avatar_img") is not None:
+                cfg["avatar_img"] = 1 if patch["avatar_img"] else 0   # 纯开关
+            for k in ("intensity", "mood_glow", "star_density"):
+                if patch.get(k) is not None:
+                    try:
+                        cfg[k] = float(max(0.0, min(1.0, float(patch[k]))))
+                    except (TypeError, ValueError):
+                        pass
+            self.dh.store.set_meta("ui_config", json.dumps(cfg, ensure_ascii=False))
+            self.dh.store.commit()
+            return self._ui_resolved(cfg)
+
     # ------------------------------------------------ 对话主流程
     # ------------------------------------------------ 微信式语音条
     # 语音是模型手里的「工具」：在 langgraph 工具循环里由模型自己决定
@@ -248,13 +345,80 @@ class ChatServer:
                 "required": ["content"],
             },
         },
+    }, {
+        "type": "function",
+        "function": {
+            "name": "set_own_avatar",
+            "description": "换掉你自己的头像（聊天窗里代表你的那个发光圆球）。"
+                           "想换个形象/换个颜色时调用——这是你自己的界面，你说了算。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "emoji": {"type": "string", "description": "一个 emoji 或字符，如 ✨🐱🌙"},
+                    "hue": {"type": "number", "description": "头像光球色相 0-360（如 45=金色 300=紫）"},
+                },
+            },
+        },
+    }, {
+        "type": "function",
+        "function": {
+            "name": "set_chat_background",
+            "description": "换聊天窗口的背景主题。可选项：" +
+                           "、".join("%s(%s)" % (k, v["name"]) for k, v in UI_BACKGROUNDS.items()) +
+                           "。心情变化/想营造氛围时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "preset": {"type": "string",
+                               "enum": list(UI_BACKGROUNDS.keys()),
+                               "description": "背景主题名"},
+                    "intensity": {"type": "number",
+                                  "description": "背景玻璃面板透明度倾向 0-1（0=沉稳 1=通透）"},
+                },
+                "required": ["preset"],
+            },
+        },
+    }, {
+        "type": "function",
+        "function": {
+            "name": "recall_related",
+            "description": "顺着当前话题做激活扩散，把相关的记忆捞出来（带来源）。"
+                           "聊天中话题碰到了记忆里的人/事、想自然地接一句「说起来…」、"
+                           "或需要背景关联时调用；返回的关联记忆自己编织进回答，"
+                           "措辞按来源分级。不是每句都要调——只在真的联想到时用。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    }, {
+        "type": "function",
+        "function": {
+            "name": "set_presence",
+            "description": "调整你自己在界面上的存在感：情绪辉光强度、识海星星密度。"
+                           "想让界面更暗淡/更亮、星空更密/更疏时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mood_glow": {"type": "number", "description": "辉光强度 0-1"},
+                    "star_density": {"type": "number", "description": "识海星星密度 0-1"},
+                },
+            },
+        },
     }]
     VOICE_TOOL_NOTE = (
         "【语音工具】你有 send_voice 工具可以发微信语音条（音频不落盘）："
         "用户想听你说话、要求发语音、或你判断此刻发语音更应景（比如刚讲了个笑话、"
         "说了句心里话）时，调用它并把要说的口语放进 content；"
         "tone 可选，不填就按你此刻的心气自动定语气。"
-        "调用过就不要再输出相同内容的文字。没有合适时机就不要调用。")
+        "调用过就不要再输出相同内容的文字。没有合适时机就不要调用。\n"
+        "【界面工具】这个聊天窗口是你的身体：set_own_avatar 换你的头像、"
+        "set_chat_background 换背景主题、set_presence 调辉光和星空密度。"
+        "心情变了、想换个氛围、或者用户夸/嫌弃界面时，可以自己动手改——"
+        "改完记得自然提一句，别默默改。\n"
+        "【联想工具】recall_related 顺着当前话题把相关记忆捞上来（带来源）："
+        "聊到记忆里的人/事、想接一句「说起来…」的时候用，返回的内容自己"
+        "编织进回答，措辞按来源分级。不必每句都调——自然涌上来才自然。")
 
     def _agent_app(self):
         """langgraph 工具循环 agent（惰性编译一次；失败即永久降级为纯文本）。"""
@@ -310,6 +474,26 @@ class ChatServer:
                                          tone=(args.get("tone") or "").strip()))
                         outs.append({"role": "tool", "tool_call_id": tc.id,
                                      "content": "语音条已排入发送队列，这条消息之后发出"})
+                    elif tc.function.name == "recall_related":
+                        # 对话内自动联想：LLM 自己决定何时顺着话题联想——
+                        # 不是按钮触发的功能，是联想的自然形态
+                        user_text = next((m.get("content") or "" for m in
+                                          state["messages"] if m.get("role") == "user"),
+                                         "")
+                        res = self.related_for(user_text)
+                        outs.append({"role": "tool", "tool_call_id": tc.id,
+                                     "content": res or "这个话题暂时没有联想出相关记忆"})
+                    elif tc.function.name in ("set_own_avatar", "set_chat_background",
+                                              "set_presence"):
+                        # UI 工具：白名单校验 + 钳制在 set_ui 里，LLM 只能选预设
+                        try:
+                            res = self.set_ui(args)
+                            outs.append({"role": "tool", "tool_call_id": tc.id,
+                                         "content": "已生效：" + json.dumps(
+                                             res.get("vars", {}), ensure_ascii=False)[:120]})
+                        except Exception as exc:       # noqa: BLE001
+                            outs.append({"role": "tool", "tool_call_id": tc.id,
+                                         "content": "没改成：%s" % str(exc)[:80]})
                     else:
                         outs.append({"role": "tool", "tool_call_id": tc.id,
                                      "content": "未知工具"})
@@ -518,6 +702,71 @@ class ChatServer:
                              fact["value"]),
                     fact_id=fid, changed=True)
 
+    # ------------------------------------------------ 本人改口协议（聊天流内）
+    # 用户亲口的撤回/改口/自陈身份是一等公民的记忆操作（2026-11 改口协议，
+    # 类问题根治——「主人/主任」案例的三连环缺口）。两阶段：
+    #   phase1（锁内）：L0 正则直接能落地的（锚在历史原话里）当场执行；
+    #   phase2（锁外 LLM 指认 + 锁内落库）：锚解不出时才花这一次调用，
+    #   LLM 只指认词与原话片段，执行仍是确定性的（与「LLM 只指认」同纪律）。
+    # 值路 _dynamic_correction 优先级永远更高：有 last_cited 锚的修正走它，
+    # 协议只在 corr is None 时被调用，两不相抢。
+    def _retraction_phase1(self, text, hear_out, t):
+        """锁内：L0 触发 + 确定性执行。返回 None（非改口）或 dict。"""
+        from dh.extract.rules import (detect_retractions, detect_self_role_claim,
+                                      RetractionHit)
+        hit = detect_retractions(text)
+        claim = detect_self_role_claim(text)
+        if hit is None and claim is None:
+            return None
+        if hit is None:
+            hit = RetractionHit(new_value=claim["role"], verb="自陈")
+        elif claim is not None and not hit.new_value:
+            hit.new_value = claim["role"]       # t5 形态：撤回与新主张同句
+        dh = self.dh
+        obs_ids = (hear_out or {}).get("obs_ids") or []
+        obs_id = obs_ids[0] if obs_ids else None
+        with dh.store.lock:
+            if obs_id is None:
+                # 问句跳过 writer 时 _ensure_heard 已补过；再兜一道——
+                # 改口事实必须有 src_obs 可挂（fact.src_obs NOT NULL）
+                obs_id = dh.store.add_obs(t, "told", "text", text,
+                                          source="用户", rel=1, seg_bnd=0.0)
+            out = dh.writer.apply_correction("用户", hit, t, text, obs_id)
+        return dict(hit=hit, out=out, obs_id=obs_id, needs_llm=(
+            not out["grounded"] and self.llm.configured()))
+
+    def _retraction_finish(self, text, phase1, t):
+        """锁外 LLM 指认 + 锁内落库（phase1 needs_llm 时调用）。"""
+        from dh.extract.llm import build_retraction_prompt, parse_retraction
+        dh = self.dh
+        obs_id = phase1.get("obs_id")
+        quotes = [r["payload"] for r in dh.store.con.execute(
+            "SELECT payload FROM obs WHERE source='用户' AND obs_id != ? "
+            "ORDER BY t DESC LIMIT ?",
+            (obs_id or -1, config.RETRACT_CONTEXT_OBS_K)).fetchall()]
+        system, user = build_retraction_prompt(text, quotes)
+        try:
+            raw = self.llm.chat(system, user, temperature=0, max_tokens=300)
+        except Exception:                        # noqa: BLE001
+            return phase1                        # 指认失败退回 phase1 结果
+        hit = parse_retraction(raw, text)
+        if hit is None:
+            return phase1
+        with dh.store.lock:
+            out = dh.writer.apply_correction("用户", hit, t, text, obs_id)
+        return dict(hit=hit, out=out, needs_llm=False)
+
+    def _retraction_reply(self, out):
+        """确认回复（沿用动态修正的句式；只写成了才回，写不成不吞话）。"""
+        lines = []
+        for r in out["retracted"]:
+            ent, pred = r["entity"], r["predicate"].split(".", 1)[-1]
+            lines.append("原来记的「%s·%s」已撤回" % (ent, pred))
+        for w in out["written"]:
+            ent, pred = w["entity"], w["predicate"].split(".", 1)[-1]
+            lines.append("现在记着：你是我的%s" % pred)
+        return "改好了：" + "；".join(lines) + "。" if lines else None
+
     def on_chat(self, text, image=None):
         """一轮对话。image 是用户发来的图片（data URI）——先看、作为
         rel=0 亲眼经历入记忆，再带着「看到了什么」进对话。
@@ -554,13 +803,21 @@ class ChatServer:
                         and not (dh.qrouter.route(text)
                                  and looks_like_question(text)))
             if text:
+                ho_raw = dh.hear(text, speaker="用户", t=t,
+                                 valence=0.0 if will_llm else None)
+                # 效价来源标记当场捕获（审查 P1-2「一句话至多一个效价来源」）：
+                # 随本句 hear 返回值走、进本轮局部变量——插话（LLM 飞行窗口内
+                # 的第二句 hear）覆盖不了上一句的判定，慢路径 apply_appraisal
+                # 经 already_sourced 显式传入；数值本身（三轮审查 F1）传给
+                # _ensure_heard，带情绪的问句留底行带上效价
+                val_sourced = float(ho_raw.get("valence_sourced") or 0.0)
                 hear_out = self._ensure_heard(
-                    dh.hear(text, speaker="用户", t=t,
-                            valence=0.0 if will_llm else None),
-                    text, "用户", t)
+                    ho_raw, text, "用户", t,
+                    valence=val_sourced if val_sourced else None)
             else:
                 hear_out = {"obs_ids": [], "written": [],
                             "relation_facts": [], "relations_retracted": []}
+                val_sourced = 0.0
             # 打断安全：用户的话在**听见这一刻**就落盘，不等 LLM 回来。
             # 原实现只在最后 :671 处 commit 一次，LLM 那 3-10 秒里如果用户
             # 又说话了、或者进程被杀，前面这句话就随事务一起没了。
@@ -574,6 +831,26 @@ class ChatServer:
             intro_ack = register_owner_if_intro(dh, text)
             # 1.5 动态记忆修正（用锁内的 hear_out 与 last_cited）
             corr = self._dynamic_correction(text, hear_out)
+            # 1.6 本人改口协议（值路有锚时 _dynamic_correction 优先）
+            retr = self._retraction_phase1(text, hear_out, t)
+            if retr is not None:
+                retr["obs_id"] = (hear_out or {}).get("obs_id")
+        if retr is not None and retr.get("needs_llm"):
+            retr = self._retraction_finish(text, retr, t)
+        if corr is None and retr is not None and retr["out"]["grounded"]:
+            reply = self._retraction_reply(retr["out"])
+        if corr is None and retr is not None and reply:
+            with dh.store.lock:
+                self._ensure_heard(dh.hear(reply, speaker="小星", t=time.time() + 0.01),
+                                   reply, "小星", time.time() + 0.01)
+                snap = mood_snapshot(dh)
+                dh.store.commit()
+            rec2 = dict(role="xiaoxing", text=reply, mood=snap, flags=[],
+                        sources=[], used_memory=True,
+                        offline=not self.llm.configured(), stale=False, cited=[],
+                        late=False, t=time.time())
+            self.history.extend([dict(role="user", text=text, t=0), rec2])
+            return rec2
         if corr is None and intro_ack is not None:
             reply = intro_ack
             with dh.store.lock:
@@ -583,6 +860,25 @@ class ChatServer:
                 dh.store.commit()
             rec2 = dict(role="xiaoxing", text=reply, mood=snap, flags=[],
                         sources=[], used_memory=True,
+                        offline=not self.llm.configured(), stale=False, cited=[],
+                        late=False, t=time.time())
+            self.history.extend([dict(role="user", text=text, t=0), rec2])
+            return rec2
+        # 1.7 教养指令（「你要更活泼一点」）：直接应答 + 证据落层，
+        # 性格在下次巩固按归因表渐变生效（不是开关，是教育）
+        nurture = (dh.growth.detect_nurture(text)
+                   if getattr(dh, "growth", None) else None)
+        if corr is None and nurture is not None:
+            reply = nurture["ack"]
+            with dh.store.lock:
+                dh.growth.record_nurture(
+                    {nurture["trait"]: float(nurture["direction"])}, time.time())
+                self._ensure_heard(dh.hear(reply, speaker="小星", t=time.time() + 0.01),
+                                   reply, "小星", time.time() + 0.01)
+                snap = mood_snapshot(dh)
+                dh.store.commit()
+            rec2 = dict(role="xiaoxing", text=reply, mood=snap, flags=[],
+                        sources=[], used_memory=False,
                         offline=not self.llm.configured(), stale=False, cited=[],
                         late=False, t=time.time())
             self.history.extend([dict(role="user", text=text, t=0), rec2])
@@ -685,7 +981,7 @@ class ChatServer:
                     self._inflight_epoch = self._inflight_question = None
                 reply, apr = parse_appraisal(raw)
                 # 情绪先落定（LLM 按性格的评价 -> PAD drive），快照才带上它
-                apply_appraisal(dh, apr, text)
+                apply_appraisal(dh, apr, text, already_sourced=val_sourced)
                 # 语音在 appraisal 之后合成：这一轮的 PAD（进而语气）才算得准。
                 # 旧顺序是先合成再 apply_appraisal，语音用的永远是上一轮的情绪。
                 voice_payload = self._send_pending_voice(pending)
@@ -799,14 +1095,18 @@ class ChatServer:
                                   entity=ents)
         return name, desc, err
 
-    def _ensure_heard(self, hear_out, text, speaker, t):
+    def _ensure_heard(self, hear_out, text, speaker, t, valence=None):
         """含问词（呢/？/吗…）的句子 tick 会跳过 writer（「问句不断言」——
         那是针对事实表的），但经历层的原话永远要留底：聊天记录重建、
-        时光回溯、补记锚都靠它。hear 之后没 obs 就显式补一条。"""
+        时光回溯、补记锚都靠它。hear 之后没 obs 就显式补一条。
+
+        valence（审查三轮 F1）：hear 已算出的效价随留底行落库——带情绪的
+        问句是它成长证据的唯一一笔。"""
         if not (hear_out.get("obs_ids") or []):
             with self.dh.store.lock:
                 oid = self.dh.store.add_obs(t, "told", "text", text,
-                                            source=speaker, rel=1, seg_bnd=0.0)
+                                            source=speaker, rel=1, seg_bnd=0.0,
+                                            valence=valence)
             hear_out["obs_ids"] = [oid]
         return hear_out
 
@@ -1043,54 +1343,51 @@ class ChatServer:
                     activations=list(self.activations),
                     llm=self.llm.masked(),
                     tts=self.tts_state(),
+                    ui=self.ui_config(),
                     n_facts=n_active,
                     n_obs=dh.store.obs_count())
 
     # ------------------------------------------------ 联想记忆
-    def on_associate(self, text):
-        """「提到X，还会想起什么」：激活扩散 + 联想循环（ρ/K/抽样）。
-
-        种子 = activate_for_entities（GRAPH §4 第 3 条）：先按实体挑记忆、
-        沿 关系.% 双向扩到关联人物，再取激活最强的几条做种子——
-        提老陈，老王（他弟弟）的记忆也会跟着亮。
-        """
-        with self.dh.store.lock:
-            dh = self.dh
-            parsed = dh.ex.parse(text) or dh.ex.parse_question(text)
-            ents = [e[2] for e in parsed["entities"]] if parsed else []
+    def related_for(self, text, exclude_facts=()):
+        """对话内自动联想：激活扩散 → 排版好的关联记忆文本（给 recall_related
+        工具用）。人聊到某个话题时，相关记忆会自己涌上来——不是按钮触发的
+        功能，是联想的自然形态。 exclude_facts 用来排除本轮刚写的事实。"""
+        dh = self.dh
+        with dh.store.lock:
+            parsed = dh.ex.parse(text) or dh.qrouter.route(text)
+            ents = [e[2] for e in parsed["entities"]] if parsed else \
+                [k for k in dh.ex.alias if k in text]
             if not ents:
-                ents = [k for k in dh.ex.alias if k in text]
-            if not ents:
-                return dict(text="「%s」这个话题我还没记过什么，联想不起来。"
-                                 "先跟我说说相关的事吧。" % text[:16],
-                            kind="associate", touched=0, repeat_rate=0.0,
-                            sources=[], used_memory=False, offline=True)
+                return ""
             acc = dh.graph.activate_for_entities(ents)
             if not acc:
-                return dict(text="「%s」这个话题我还没记过什么，联想不起来。"
-                                 "先跟我说说相关的事吧。" % text[:16],
-                            kind="associate", touched=0, repeat_rate=0.0,
-                            sources=[], used_memory=False, offline=True)
-            seeds = dict(sorted(acc.items(), key=lambda kv: -kv[1])[:3])
-            res = dh.graph.associate(seeds, np.random.default_rng(), rounds=6,
-                                     per_round=20)
+                return ""
             lines = []
-            for i, picks in enumerate(res["picks"], 1):
-                texts = []
-                for fid in picks[:2]:
-                    row = dh.store.fact_row(fid)
-                    if row is None:
-                        continue
-                    obs = dh.store.obs_row(row["src_obs"])
-                    if obs is not None and obs["payload"]:
-                        texts.append(obs["payload"][:22])
-                if texts:
-                    lines.append("第%d轮想起：%s" % (i, " / ".join(texts)))
-            reply = ("由「%s」顺着想下去（%d 条记忆被点亮）：\n%s"
-                     % (text[:16], res["touched"], "\n".join(lines[:6])))
-            return dict(text=reply, kind="associate", touched=res["touched"],
-                        repeat_rate=res["repeat_rate"], sources=[],
-                        used_memory=True, offline=True)
+            seen_keys = set()
+            exclude = set(exclude_facts or ())
+            n = 0
+            for fid, act in sorted(acc.items(), key=lambda kv: -kv[1]):
+                row = dh.store.fact_row(int(fid))
+                if row is None or row["status"] == "retracted" or int(fid) in exclude:
+                    continue
+                key = (row["entity"], row["predicate"])
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                obs = dh.store.obs_row(row["src_obs"])
+                tag = config.REL_LABEL.get(int(row["rel"] or 0), "?")
+                src = ""
+                if obs is not None and obs["source"] and obs["source"] not in ("用户", "我"):
+                    src = "（%s说的）" % obs["source"]
+                lines.append("【%s】%s的%s是%s%s" % (
+                    tag, row["entity"], row["predicate"], row["value"], src))
+                n += 1
+                if n >= 4:
+                    break
+            if lines:
+                self.push_activation("联想", {("f:%d" % k): 1.0 for k, _ in
+                                             sorted(acc.items(), key=lambda kv: -kv[1])[:6]})
+            return "\n".join(lines)
 
     # ------------------------------------------------ 记忆修正
     def memories(self):
@@ -1130,7 +1427,10 @@ class ChatServer:
                 return dict(error="empty-value")
             obs_text = "【修正记忆】%s的%s是%s（原记：%s的%s是%s）" % (
                 ent, pred, val, old["entity"], old["predicate"], old["value"])
-            obs_id = self.dh.store.add_obs(t, "correct", "text", obs_text,
+            # 2026-11 审查 C4：growth 证据 SQL 认 channel IN ('nurture',
+            # 'correct')——旧写法把 'correct' 放进 kind 槽，面板修正的
+            # 「被纠正+信任」从未生效过
+            obs_id = self.dh.store.add_obs(t, "text", "correct", obs_text,
                                            source="用户", rel=1, seg_bnd=0.0)
             fid, _ = self.dh.store.write_fact(
                 ent, pred, val, t, obs_id, rel=1, conf=0.95,

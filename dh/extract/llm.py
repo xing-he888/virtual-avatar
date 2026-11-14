@@ -240,3 +240,55 @@ def default_registry():
     return {p: {"multi": m} for p, m in
             (("电话", False), ("备用电话", True), ("工作单位", False),
              ("科室", False), ("住址", False), ("病情", False))}
+
+
+# ---------------------------------------------------------------- 本人改口协议（L1 指认）
+# L0（rules.detect_retractions）是便宜的高召回触发器；锚解不出时才调这里的
+# 同步小 LLM 指认（一次调用、只在这种句形上花 token）。LLM 只指认「撤哪个词、
+# 新说法是什么」，fact_id/连坐范围/落地校验全在 writer.apply_correction 的
+# 确定性代码里——与「LLM 只指认不发明」同纪律（2026-11 改口协议设计）。
+def build_retraction_prompt(text, recent_quotes):
+    """recent_quotes: 本说话人最近 RETRACT_CONTEXT_OBS_K 条原话（旧→新或新→旧
+    均可，只作指认素材）。"""
+    quotes = "\n".join("%d. %s" % (i + 1, q) for i, q in enumerate(recent_quotes))
+    system = (
+        "你是记忆修正的指认器。用户说了一句改口/撤回的话，"
+        "你要只根据材料指认三件事，绝对不许发明：\n"
+        '1. retract_term：被撤回的词（2-6 字），必须逐字出现在下面列出的'
+        "【历史原话】里；找不到就填空字符串。\n"
+        '2. retract_quote：被撤回的那句原话里的一段逐字片段（10 字以内），'
+        "必须逐字出现在【历史原话】里；找不到填空字符串。\n"
+        '3. new_value：新说法（2-6 字），必须逐字出现在【当前这句话】里。\n'
+        "没有把握就全部填空字符串。只输出 JSON：\n"
+        '{"retract_term":"","retract_quote":"","new_value":""}'
+    )
+    user = "【历史原话】\n%s\n\n【当前这句话】%s" % (quotes, text)
+    return system, user
+
+
+def parse_retraction(raw, text):
+    """解析 LLM 指认 + 确定性初校验（new_value 必须是当前话的逐字子串）。
+
+    retract_term 的历史落地校验需要查库，在 writer.apply_correction 里做
+    （这里没有库）。返回 RetractionHit 或 None（解析失败/子串校验不过/
+    全空——宁可不动记忆）。"""
+    from .rules import RetractionHit, _clean_role
+    data = _repair_json(raw or "")
+    try:
+        d = json.loads(data) if isinstance(data, str) else (data or {})
+    except ValueError:
+        return None
+    if not isinstance(d, dict):
+        return None
+    term = _clean_role(str(d.get("retract_term") or ""))
+    quote = str(d.get("retract_quote") or "").strip()
+    new_value = _clean_role(str(d.get("new_value") or ""))
+    if new_value and new_value not in text:
+        new_value = None                       # G3 口语版：新值必须逐字在原话里
+    if not (term or quote or new_value):
+        return None
+    hit = RetractionHit(term=term or None, new_value=new_value or None,
+                        whole_sentence=bool(quote) and not term and not new_value)
+    if quote:
+        hit.quote = quote                      # quote 的历史落地校验在 writer（查库）
+    return hit

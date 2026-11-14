@@ -12,12 +12,14 @@
     （信度 0.5 时 +239%）。用 a = C2/C1（观测噪声只污染 k=0 格）偏差 <=4%。
 """
 import math
+import time
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import numpy as np
 
 from .. import config
+from . import rhythm
 
 PAD_DIM = 3
 
@@ -103,9 +105,10 @@ class OUDynamics:
     def mean_revert(self, s: PAD, dt_min: float) -> PAD:
         """无噪声的均值回归：s -> mu + (s-mu)·exp(-theta·dt)。
 
-        长间隔墙钟同步专用（隔夜/隔天）：OU 的大步长端点是「从平稳分布
-        重新抽签」（平稳 sd≈0.56），一天的随机波动不该靠一次抽签——那部分
-        归经历塑形（persona.shape）管；这里只做确定性均值回归，即「忘掉」。"""
+        长间隔回归的原语（decay 的长间隔分支调它，隔夜/隔天）：OU 的大步长
+        端点是「从平稳分布重新抽签」（平稳 sd≈0.56），一天的随机波动不该靠
+        一次抽签——那部分归成长层塑形管；这里只做确定性均值回归，即「忘掉」。
+        mu 由调用方在步进前 refresh 到「终点时刻」（见 decay 长间隔分支注释）。"""
         v = s.as_array()
         a = np.exp(-self.theta * dt_min)
         mean = self.mu * (1 - a) + a * v
@@ -225,14 +228,50 @@ class AffectSystem:
     # 自己的生成器：调用方不传 rng 也不许碰 OS 熵（同种子同结果）
     rng: np.random.Generator = field(default_factory=lambda: np.random.default_rng(2026))
     log: List[dict] = field(default_factory=list)
+    # 性格基线（成长层供数，mu_at = base_mu + 昼夜偏移）。None = 出厂 EMO_MU。
+    base_mu: Optional[np.ndarray] = None
+    # 时刻源：默认本地钟（昼夜节律从这里读「现在几点」）。测试注入固定
+    # epoch 即得固定小时——确定性纪律在昼夜节律下的延伸：噪声进 seed，
+    # 时刻进 clock，两者都可注入。
+    clock: Callable[[], float] = time.time
     # 并发约定：state 只允许**整对象替换**（tick/decay/mean_revert 都是重新
     # 赋值 self.state），不许原地改字段——锁外的读者（web defer 闸门、前端
     # 轮询）靠这条拿到完整的新旧快照之一，不会撕裂读。要改字段先整体换。
+
+    # ------------------------------------------------ 基线（性格 + 昼夜）
+    def mu_at(self, hour=None):
+        """此刻的完整基线 = 性格基线 + 昼夜偏移。
+
+        mu 从此不再是一个常数：成长层定「平时什么底色」，昼夜节律定
+        「这一天这个时刻偏向哪」，OU 负责让状态回到它。"""
+        base = config.EMO_MU if self.base_mu is None else self.base_mu
+        base = np.asarray(base, dtype=np.float64)
+        if not rhythm.on():
+            return base.copy()   # 拷贝防别名：谁原地改 dyn.mu 会污染模块级常量
+        if hour is None:
+            hour = rhythm.hour_of(self.clock())
+        return base + rhythm.offset(hour)
+
+    def refresh_mu(self, hour=None):
+        """把 dyn.mu 刷成此刻的基线。每次动力学步进前调用——mu 是吸引子，
+        吸引子本身随钟面缓慢移动，OU 会自然把状态拖向「这个时刻该有的底色」
+        （凌晨唤醒被压下去、傍晚抬起来），不需要任何额外机制。"""
+        self.dyn.mu = self.mu_at(hour)
+
+    def set_base_mu(self, mu):
+        """性格基线热更新（成长层塑形后调用）：特质动了 → 基线立刻生效。
+
+        旧实现的断点：dyn.mu 只在开机时赋值一次，长会话里第 7 步塑形
+        移动了特质后，行为偏置（face_bias）立刻变、情绪底色却要重启才变。
+        现在基线统一从这里进，改完立即 refresh。"""
+        self.base_mu = np.asarray(mu, dtype=np.float64)
+        self.refresh_mu()
 
     def tick(self, dt_ms, apr: Optional[Appraisal] = None,
              rng: Optional[np.random.Generator] = None,
              drive: Optional[PAD] = None):
         self.t_ms += dt_ms
+        self.refresh_mu()
         rng = rng or self.rng
         if drive is None:
             drive = PAD()
@@ -247,6 +286,28 @@ class AffectSystem:
         self._log(dt_ms)
         return dict(t_ms=self.t_ms, p=self.state.p, a=self.state.a,
                     d=self.state.d)
+
+    def shock(self, delta: PAD):
+        """情绪冲击：一次性评价事件（被骂/被夸/意外）全量落进状态，带饱和。
+
+        为什么不走 drive 路径：drive 在 OU 步进里乘 (1-a)≈0.15 的阻尼——
+        那是为 tick 内部的小 novelty 评价设计的（阻尼防抖）。但人的现象
+        学是「被狠骂一记当场变脸，然后慢慢恢复」——冲击该一次到位，
+        衰减交给之后的 decay。形态：shock（瞬时跳变）+ decay（慢恢复），
+        正是人的情绪事件曲线。
+
+        饱和（习惯化）：同方向已经拉满时，同向冲击效果递减——已经狂喜
+        时再被夸不会更开心；反方向冲击不受影响（狂喜时被骂照样重）。
+        逐维：effective = delta × (1 − sign(delta)·state)。
+        """
+        cur = self.state.as_array()
+        dv = delta.as_array()
+        sat = np.where(dv > 0, np.clip(cur, 0.0, 1.0), np.clip(-cur, 0.0, 1.0))
+        eff = dv * (1.0 - sat)
+        self.state = PAD.from_array(cur + eff).clipped()
+        self.t_ms += 1000.0
+        self._log(1000.0)
+        return self.state
 
     def decay(self, dt_ms):
         """无外部冲击地流过 dt。**常驻时钟与墙钟同步都用它。**
@@ -265,16 +326,29 @@ class AffectSystem:
 
         代价：零。mean_revert 是一次 exp()。
 
-        短间隔（< EMO_STEP_MS）仍走随机步——那时候人就在旁边，
+        短间隔（≤ EMO_STEP_MS）仍走随机步——那时候人就在旁边，
         情绪该有点自然抖动。
+
+        昼夜节律：两条路步进前都 refresh_mu——短间隔 mu 取此刻；长间隔
+        mu 取**终点**时刻（理由见下方分支内注释）。
         """
         dt_ms = max(float(dt_ms), 0.0)
         if dt_ms <= 0.0:
             return self.state
         if dt_ms <= config.EMO_STEP_MS:
+            self.refresh_mu()
             self.state = self.dyn.step(self.state, dt_ms / 60000.0,
                                        PAD(), self.rng)
         else:
+            # 长间隔：一次均值回归到「此刻」的基线。mu 刷成终点时刻的——
+            # 情绪记忆的半衰期只有分钟级（theta 0.10~0.15/min），昼夜偏移
+            # 的时标是小时：任何跨峰谷的长间隔里 a=exp(-θ·dt)≪1，路径上
+            # 的 mu 变化全被指数记忆抹掉，到达时状态只贴「这个时刻」的
+            # 吸引子。分段积分能省下的误差实测 ≤0.01（试过按小时分段），
+            # 远小于幅度 0.06~0.12 的设计容差——不值得添机器。
+            # （对比上面切小步的教训：那是随机步的 sqrt(n) 噪声问题；这里
+            # 是确定性映射，本就没有噪声可攒。）
+            self.refresh_mu()
             self.state = self.dyn.mean_revert(self.state, dt_ms / 60000.0)
         self.t_ms += dt_ms
         self._log(dt_ms)

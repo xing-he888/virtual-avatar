@@ -172,6 +172,10 @@ def main():
         dh4.hear(tr["text"], speaker=tr["speaker"], t=float(tr["t"]),
                  valence=tr["valence"])
     dh4.store.commit()
+    # 游移有阶段门（初生期不游移——成长层的设定）。本幕演示的是游移
+    # 机制本身，显式把演示库设到成熟期
+    dh4.store.calib_set("growth", "stage", "idx", 3, note="demo", fitted_t=0.0)
+    dh4.store.commit()
     res = dh4.idle(t=601.0, rng=np.random.default_rng(4))
     print("    心智游移（空闲触发，产出 rel=3 只能说「让我想起」）：")
     for th in res["wander"]["thoughts"][:4]:

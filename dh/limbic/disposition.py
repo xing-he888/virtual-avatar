@@ -152,8 +152,24 @@ class Disposition:
 
 
 def disposition(dh, surprise=0.0, attention=1.0):
-    """从当前情绪算倾向。2 µs 量级，不用缓存。"""
-    return Disposition(dh.affect.state, surprise=surprise, attention=attention)
+    """从当前情绪算倾向。2 µs 量级，不用缓存。
+
+    性格偏置在此叠加（成长层供数）：E→话多、O→联想宽、A→耐心、
+    N→畏缩——特质是慢变量，情绪是快变量，两者共同决定此刻的倾向。
+    ⚠ 叠加后必须重算 mode/label：defer/terse/elaborate 的腿路读的是
+    mode 而不是 talkativeness 数值——子代理审查 P2-2 实证过，只在
+    __init__ 里算一次的话，性格偏置对控制流零生效（「漂了看得见」
+    对 E 通道是空头支票）。"""
+    d = Disposition(dh.affect.state, surprise=surprise, attention=attention)
+    g = getattr(dh, "growth", None)
+    if g is not None:
+        b = g.face_bias()
+        d.talkativeness = _clip(d.talkativeness + b.get("talkativeness", 0.0))
+        d.patience = _clip(d.patience + b.get("patience", 0.0))
+        d.breadth = _clip(d.breadth + b.get("breadth", 0.0), 0.6, 1.5)
+        d.mode = d._mode()
+        d.label = d._label()
+    return d
 
 
 def gate(pad, surprise=0.0, attention=1.0):

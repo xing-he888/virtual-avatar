@@ -3,8 +3,9 @@
 
 分层（详见 ARCHITECTURE.md）：
     core/     心智循环层  七步 tick、工作记忆、冲突/慢系统、离线巩固
-    limbic/   右脑        情绪状态机（emotion）+ 调制面（disposition）+ 性格慢塑形（persona）
-    memory/   记忆层      存储、写回、检索、时间核、激活图、标定、值等价裁决
+    limbic/   右脑        情绪状态机（emotion）+ 调制面（disposition）
+    growth/   成长层      OCEAN 特质（traits）+ 发展阶段（stages）+ 塑形引擎（persona）
+    memory/   记忆层      存储、写回、检索、时间核、激活图、标定、值等价裁决、问句路由
     extract/  抽取层      正则规则（Tier 0）与 LLM 补记（Tier 1）
     brain/    主图（大脑）policy 路由策略 / nodes 节点 / graph 执行器
     config.py 全部工程参数（每个数带出处）

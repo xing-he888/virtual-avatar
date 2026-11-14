@@ -346,6 +346,15 @@ class MemoryStore:
             "WHERE entity=? AND predicate=? AND status='superseded' "
             "ORDER BY valid_from DESC", (entity, predicate)).fetchall()
 
+    def retracted_values(self, entity, predicate, since=0.0):
+        """本人改口协议（回答层）：已撤回行的旧值，按撤回时间倒序。
+        since 过滤撤回时刻（valid_to）——太老的改口不再喂回答层。"""
+        return self.con.execute(
+            "SELECT value,valid_from,valid_to FROM fact "
+            "WHERE entity=? AND predicate=? AND status='retracted' "
+            "AND valid_to >= ? ORDER BY valid_to DESC",
+            (entity, predicate, since)).fetchall()
+
     def fact_row(self, fact_id):
         return self.con.execute("SELECT * FROM fact WHERE fact_id=?", (fact_id,)).fetchone()
 
@@ -621,6 +630,15 @@ class MemoryStore:
     def calib_latest(self, scope, key, k):
         row = self.con.execute(
             "SELECT v FROM calib WHERE scope=? AND key=? AND k=? "
+            "ORDER BY fitted_t DESC, id DESC LIMIT 1", (scope, key, k)).fetchone()
+        return row[0] if row else None
+
+    def calib_latest_t(self, scope, key, k):
+        """某键最新行的 fitted_t（没有历史行返回 None）。给写入侧的
+        「时间戳只进不退」护栏用：calib_latest 按 fitted_t DESC 取行，
+        回拨时间戳写入的行会被旧行遮蔽、写入静默丢失。"""
+        row = self.con.execute(
+            "SELECT fitted_t FROM calib WHERE scope=? AND key=? AND k=? "
             "ORDER BY fitted_t DESC, id DESC LIMIT 1", (scope, key, k)).fetchone()
         return row[0] if row else None
 

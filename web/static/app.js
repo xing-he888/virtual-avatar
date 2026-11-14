@@ -10,14 +10,22 @@ let typingTimer = null;
 
 // ---------- 工具 ----------
 function moodHue(p) {
-  // 效价 -> 色相：+1 暖橙 35°，-1 冷蓝 225°（hue 主导愉悦响应）
-  return Math.round(130 - 95 * p);   // p=1 -> 35, p=-1 -> 225, p=0 -> 130(黄绿中性)
+  // 效价 -> 色相（2026-11 改版）：平静=琥珀 45°，+1 金橙 30°，-1 冷蓝 215°。
+  // hue 主导愉悦响应（Valdez & Mehrabian 1994）；基点从黄绿 130° 改成
+  // 琥珀 45°——小星平静时整个界面是暖的，只有真的低落才冷下来。
+  return Math.round(p >= 0 ? 45 - 15 * p : 45 - 170 * p);   // p=1→30, p=0→45, p=-1→215
 }
+
+// 语音条的播放状态图标（单线/实心 SVG，同页面图标体系）
+const ICON_PLAY = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.6v12.8a.8.8 0 0 0 1.22.68l10-6.4a.8.8 0 0 0 0-1.36l-10-6.4A.8.8 0 0 0 8 5.6z"/></svg>';
+const ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="5.5" width="3.4" height="13" rx="1.2"/><rect x="13.6" y="5.5" width="3.4" height="13" rx="1.2"/></svg>';
+const ICON_MUTE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 9.5v5h3.4L13 19V5L7.9 9.5H4.5z"/><path d="M16.5 9.8l4.2 4.4M20.7 9.8l-4.2 4.4"/></svg>';
 
 function applyMood(m) {
   document.documentElement.style.setProperty("--mood-hue", moodHue(m.p));
   document.documentElement.style.setProperty("--mood-glow", Math.max(0, m.a).toFixed(2));
-  $("avatar").textContent = m.emoji;
+  // 图片头像模式：情绪只走辉光和「心情」章，不把头像换回 emoji
+  if (!$("avatar").querySelector("img")) $("avatar").textContent = m.emoji;
   $("moodLabel").textContent = "心情：" + m.label;
   trail.push({ p: m.p, a: m.a });
   if (trail.length > 90) trail.shift();
@@ -57,6 +65,43 @@ function chip(cls, text) {
   return s;
 }
 
+// ---------- 头像 ----------
+// ui_config.avatar_img 开（用户装了图片头像）时，小星的聊天气泡也用照片；
+// 用户自己的 🧑 和游移的 💭 是标记不是身份，保持 emoji。
+let avatarImgOn = false;
+
+function paintAvatarEl(av, emoji) {
+  av.dataset.emoji = emoji || "🙂";
+  if (avatarImgOn) {
+    if (!av.querySelector("img")) {
+      av.textContent = "";
+      const img = document.createElement("img");
+      img.src = "/avatar.jpg";
+      img.alt = "小星";
+      av.appendChild(img);
+    }
+  } else {
+    av.textContent = av.dataset.emoji;
+  }
+}
+
+function repaintAvatars() {
+  document.querySelectorAll(".msg .avatar").forEach((av) => {
+    if (av.dataset.user) return;                       // 用户的头像不动
+    if (avatarImgOn) {
+      if (!av.querySelector("img")) {
+        av.textContent = "";
+        const img = document.createElement("img");
+        img.src = "/avatar.jpg";
+        img.alt = "小星";
+        av.appendChild(img);
+      }
+    } else {
+      av.textContent = av.dataset.emoji || "🙂";
+    }
+  });
+}
+
 // ---------- 消息 ----------
 function addBubble(role, text, extra) {
   const row = document.createElement("div");
@@ -65,7 +110,12 @@ function addBubble(role, text, extra) {
   av.className = "avatar";
   av.style.width = av.style.height = "34px";
   av.style.fontSize = "18px";
-  av.textContent = role === "user" ? "🧑" : (extra && extra.mood ? extra.mood.emoji : "🙂");
+  if (role === "user") {
+    av.dataset.user = "1";
+    av.textContent = "🧑";
+  } else {
+    paintAvatarEl(av, extra && extra.mood ? extra.mood.emoji : "🙂");
+  }
   const col = document.createElement("div");
   if (extra && extra.image) {                        // 用户发的图片（发送时 dataURI / 历史 /img/）
     const im = document.createElement("img");
@@ -144,7 +194,7 @@ function thinkingBubble() {
   av.className = "avatar";
   av.style.width = av.style.height = "34px";
   av.style.fontSize = "18px";
-  av.textContent = "🙂";
+  paintAvatarEl(av, "🙂");
   const col = document.createElement("div");
   const b = document.createElement("div");
   b.className = "bubble";
@@ -258,7 +308,7 @@ function unlockAudio() {
     _audioEl.onended = () => {
       if (_activeVoiceBar) {
         const i = _activeVoiceBar.querySelector(".vicon");
-        if (i) i.textContent = "▶";
+        if (i) i.innerHTML = ICON_PLAY;
         _activeVoiceBar = null;
       }
     };
@@ -274,11 +324,11 @@ function addVoiceBubble(seconds, src, tip) {
   av.className = "avatar";
   av.style.width = av.style.height = "34px";
   av.style.fontSize = "18px";
-  av.textContent = "🙂";
+  paintAvatarEl(av, "🙂");
   const col = document.createElement("div");
   const b = document.createElement("div");
   b.className = "bubble voice-bar" + (src ? "" : " dead");
-  b.innerHTML = '<span class="vicon">' + (src ? "▶" : "🔇") + "</span> 语音条 " +
+  b.innerHTML = '<span class="vicon">' + (src ? ICON_PLAY : ICON_MUTE) + "</span> 语音条 " +
     '<span class="vlen">' + seconds + '″</span>';
   if (tip) b.title = tip;
   const meta = document.createElement("div");
@@ -297,15 +347,15 @@ function addVoiceBubble(seconds, src, tip) {
     if (!_audioEl) unlockAudio();
     if (_activeVoiceBar === b) {          // 再点 = 暂停
       _audioEl.pause();
-      b.querySelector(".vicon").textContent = "▶";
+      b.querySelector(".vicon").innerHTML = ICON_PLAY;
       _activeVoiceBar = null;
       return;
     }
     _audioEl.src = src;
     _audioEl.play().then(() => {
-      if (_activeVoiceBar) _activeVoiceBar.querySelector(".vicon").textContent = "▶";
+      if (_activeVoiceBar) _activeVoiceBar.querySelector(".vicon").innerHTML = ICON_PLAY;
       _activeVoiceBar = b;
-      b.querySelector(".vicon").textContent = "⏸";
+      b.querySelector(".vicon").innerHTML = ICON_PAUSE;
     }).catch(() => { b.title = "浏览器拦截了播放——再点一次就出声"; });
   };
 }
@@ -313,6 +363,50 @@ function addVoiceBubble(seconds, src, tip) {
 // ---------- 状态轮询 ----------
 let lastWanderT = null;
 let stateFirst = true;       // 首次快照只记基线，不弹旧游移
+
+// 小星可自改的前端外观：/api/state 里的 ui 段 → 直接刷 CSS 变量。
+// 白名单预设+钳制在服务端 set_ui 里做，这里 dumb-apply 零判断——
+// LLM 改完头像/背景，下一拍全端生效（网页/桌面共用）。
+// 主题跟随：背景键是 ink（墨黑）时按钮显示太阳（点它回白），否则显示月亮。
+const ICON_SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5 5l1.6 1.6M17.4 17.4 19 19M19 5l-1.6 1.6M6.6 17.4 5 19"/></svg>';
+const ICON_MOON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/></svg>';
+
+let currentBg = "deepspace";     // 当前背景预设键（applyUI 维护，切换按钮读它）
+
+function setThemeIcon(background) {
+  currentBg = background || "deepspace";
+  const b = $("btnTheme");
+  if (!b) return;
+  b.innerHTML = currentBg === "ink" ? ICON_SUN : ICON_MOON;
+}
+
+function applyUI(ui) {
+  if (!ui) return;
+  const av = $("avatar");
+  const imgOn = !!ui.avatar_img;
+  const flipped = imgOn !== avatarImgOn;
+  avatarImgOn = imgOn;
+  if (imgOn) {
+    // 图片头像：圆框里塞 <img>（情绪辉光/色相环继续作用在框上）。
+    // 一次渲染成 img 后，applyMood 的 emoji 轮询就不该再覆盖它
+    if (!av.querySelector("img")) {
+      const img = document.createElement("img");
+      img.src = "/avatar.jpg";
+      img.alt = "小星";
+      av.textContent = "";
+      av.appendChild(img);
+    }
+  } else if (ui.avatar_emoji) {
+    av.textContent = ui.avatar_emoji;
+  }
+  if (flipped) repaintAvatars();   // 开关切换时，已有聊天气泡的头像一起刷
+  const r = document.documentElement.style;
+  const vars = ui.vars || {};
+  for (const k in vars) r.setProperty(k, String(vars[k]));
+  if (ui.avatar_hue != null) r.setProperty("--avatar-hue", String(ui.avatar_hue));
+  if (ui.mood_glow != null) r.setProperty("--mood-glow", String(ui.mood_glow));
+  setThemeIcon(ui.background);
+}
 
 function addWanderBubble(w) {
   const row = document.createElement("div");
@@ -342,6 +436,7 @@ async function refreshState() {
     const r = await fetch("/api/state");
     const s = await r.json();
     applyMood(s.mood);
+    applyUI(s.ui);
     if (s.wander && s.wander.t) {
       if (stateFirst) {
         lastWanderT = s.wander.t;          // 载入前已发生的游移不重播
@@ -353,9 +448,9 @@ async function refreshState() {
     } else if (stateFirst) {
       stateFirst = false;
     }
-    $("stateSub").textContent =
-      `记忆 ${s.n_facts} 条 / 经历 ${s.n_obs} 条` +
-      (s.narrs.length ? ` · 自我叙事「${s.narrs[0].slice(0, 14)}…」` : "");
+    // 顶栏副标题只报记忆/经历数（用户裁决 2026-11-14：自我叙事不上顶栏，
+    // 它在 🌱 成长面板的「自我认知」栏和给小星的提示词里继续存在）
+    $("stateSub").textContent = `记忆 ${s.n_facts} 条 / 经历 ${s.n_obs} 条`;
     const llm = $("llmState");
     if (s.llm.has_key) {
       llm.textContent = `模型已配置（…${s.llm.tail} · ${s.llm.model}）`;
@@ -414,41 +509,6 @@ async function testConn() {
   $("testResult").textContent = s.ok ? "✓ 连通（模型回了「" + (s.sample || "ok") + "」）"
                                       : "✗ " + (s.error || "失败");
   $("testResult").className = "test-result " + (s.ok ? "ok" : "bad");
-}
-
-// ---------- 联想记忆 ----------
-async function associate() {
-  const input = $("input");
-  const text = input.value.trim();
-  if (!text) {
-    // 空输入不再静默——告诉他这个按钮怎么用
-    addBubble("xiaoxing", "（🧠 是联想：在输入框里写个话题——比如「老王」——"
-              + "我再顺着它把相关的记忆都点亮给你看。）",
-              { mood: { emoji: "🙂", p: 0, a: 0 } });
-    return;
-  }
-  input.value = "";
-  $("btnAssoc").disabled = true;
-  const th = thinkingBubble();
-  try {
-    const r = await fetch("/api/associate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
-    const data = await r.json();
-    th.row.remove();
-    const b = addBubble("xiaoxing", "", data);
-    b.textContent = data.text || "";
-    const meta = b.parentElement.querySelector(".meta");
-    if (meta && data.kind === "associate") {
-      meta.prepend(chip("think", `联想 ρ=0.55/K=200 · 重复率 ${data.repeat_rate}`));
-    }
-  } catch (e) {
-    th.row.remove();
-    addBubble("xiaoxing", "（联想出错：" + e.message + "）", { mood: { emoji: "😔", p: 0, a: 0 } });
-  }
-  $("btnAssoc").disabled = false;
 }
 
 // ---------- 记忆修正面板 ----------
@@ -547,16 +607,170 @@ function editMemValue(row, valSpan, m) {
 
 // ---------- 绑定与启动 ----------
 $("btnSend").addEventListener("click", send);
-$("btnAssoc").addEventListener("click", associate);
 $("input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
+// ---------- 成长面板：性格特质 / 信任 / 自我叙事（/api/persona，只读视图） ----------
+const GROW_TRAITS = ["O", "C", "E", "A", "N"];
+const GROW_TNAME = { O: "开放", C: "尽责", E: "外向", A: "宜人", N: "神经质" };
+const PAD_NAME = ["效价", "唤醒", "支配"];
+
+const f2 = (v) => (v >= 0 ? "+" : "") + Number(v).toFixed(2);
+
+function growSec(title) {
+  const sec = document.createElement("div");
+  sec.className = "grow-sec";
+  const h = document.createElement("h3");
+  h.textContent = title;
+  sec.appendChild(h);
+  return sec;
+}
+
+function growBar(v) {                      // v ∈ [-1,1] → 10 格方块条
+  const filled = Math.round((v + 1) / 2 * 10);
+  let bar = "";
+  for (let i = 0; i < 10; i++) bar += i < filled ? "▌" : "░";
+  return bar;
+}
+
+async function openGrowth() {
+  $("growMask").hidden = false;
+  const body = $("growBody");
+  let p;
+  try {
+    const r = await fetch("/api/persona");
+    p = await r.json();
+  } catch (e) {
+    body.textContent = "（加载失败：" + e.message + "）";
+    return;
+  }
+  body.innerHTML = "";
+
+  // 特质条：出厂种子 → 现在。动过的标出来——「被经历塑造过」要看得见
+  const secT = growSec("性格特质（被经历慢慢塑造）");
+  const tlist = document.createElement("div");
+  tlist.className = "grow-traits";
+  for (const k of GROW_TRAITS) {
+    const drift = p.traits[k] - p.seed[k];
+    const moved = Math.abs(drift) >= 0.05;
+    const row = document.createElement("div");
+    row.className = "grow-trait" + (moved ? " moved" : "");
+    const name = document.createElement("span");
+    name.className = "grow-tname";
+    name.textContent = GROW_TNAME[k];
+    const bar = document.createElement("code");
+    bar.textContent = growBar(p.traits[k]);
+    const note = document.createElement("span");
+    note.className = "grow-tdrift";
+    note.textContent = moved
+      ? `出厂 ${f2(p.seed[k])} → 现在 ${f2(p.traits[k])} ${drift > 0 ? "↑" : "↓"}`
+      : `出厂设定 ${f2(p.seed[k])}`;
+    row.append(name, bar, note);
+    tlist.appendChild(row);
+  }
+  secT.appendChild(tlist);
+  body.appendChild(secT);
+
+  // 情绪底色：出厂基线 → 此刻基线（性格 + 昼夜节律——凌晨和傍晚不一样）
+  if (p.mu_now) {
+    const secM = growSec("情绪底色（性格定基调，昼夜节律微调）");
+    const mlist = document.createElement("div");
+    mlist.className = "grow-traits";
+    p.mu_now.forEach((now, i) => {
+      const row = document.createElement("div");
+      row.className = "grow-trait";
+      const name = document.createElement("span");
+      name.className = "grow-tname";
+      name.textContent = PAD_NAME[i];
+      const note = document.createElement("span");
+      note.className = "grow-tdrift";
+      note.textContent = `出厂 ${f2(p.mu[i])} → 此刻 ${f2(now)}（此刻是说话的底色）`;
+      row.append(name, note);
+      mlist.appendChild(row);
+    });
+    secM.appendChild(mlist);
+    body.appendChild(secM);
+  }
+
+  // 信任：数值条 + 关系 stance（和提示词里同一套阈值）
+  const secR = growSec("对我们的关系");
+  const trow = document.createElement("div");
+  trow.className = "grow-trust";
+  const bar = document.createElement("div");
+  bar.className = "grow-bar";
+  const fill = document.createElement("i");
+  fill.style.width = Math.round(p.trust * 100) + "%";
+  bar.appendChild(fill);
+  const stance = p.trust < 0.4 ? "有点戒备" : p.trust > 0.75 ? "很亲近，可以开玩笑" : "当朋友处";
+  const tlabel = document.createElement("span");
+  tlabel.className = "grow-tdrift";
+  tlabel.textContent = `信任 ${f2(p.trust)} · ${stance}`;
+  trow.append(bar, tlabel);
+  secR.appendChild(trow);
+  body.appendChild(secR);
+
+  // 成长阶段 + 距下一阶段
+  const secS = growSec("成长阶段");
+  const sline = document.createElement("p");
+  sline.className = "grow-line";
+  let s = `当前：${p.stage}`;
+  if (p.next) {
+    const gap = [];
+    if (p.next.turns) gap.push(`${p.next.turns} 轮对话`);
+    if (p.next.days) gap.push(`${p.next.days} 天`);
+    if (p.next.topics) gap.push(`${p.next.topics} 个新话题`);
+    if (gap.length) s += ` · 距下一阶段还差 ${gap.join("、")}`;
+  }
+  sline.textContent = s;
+  secS.appendChild(sline);
+  body.appendChild(secS);
+
+  // 自我叙事：他自己说出口的「我变了」
+  const secN = growSec("自我认知（他自己说出口的）");
+  if (p.narrs && p.narrs.length) {
+    const ul = document.createElement("ul");
+    ul.className = "grow-narrs";
+    for (const n of p.narrs) {
+      const li = document.createElement("li");
+      li.textContent = n;
+      ul.appendChild(li);
+    }
+    secN.appendChild(ul);
+  } else {
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "还没有——特质相对出厂变化累计到 0.1 时，他会自己说出「我变了」。";
+    secN.appendChild(hint);
+  }
+  body.appendChild(secN);
+
+  if (p.last_shaped) {
+    const ts = parseFloat(p.last_shaped);
+    if (ts > 0) {
+      const foot = document.createElement("p");
+      foot.className = "hint";
+      foot.textContent = `上次塑形：${new Date(ts * 1000).toLocaleString()}`;
+      body.appendChild(foot);
+    }
+  }
+}
+
 $("btnSettings").addEventListener("click", openSettings);
 $("btnClose").addEventListener("click", () => { $("mask").hidden = true; });
 $("btnSave").addEventListener("click", saveSettings);
 $("btnTest").addEventListener("click", testConn);
 $("btnMem").addEventListener("click", openMemories);
 $("btnMemClose").addEventListener("click", () => { $("memMask").hidden = true; });
+$("btnGrowth").addEventListener("click", openGrowth);
+$("btnGrowClose").addEventListener("click", () => { $("growMask").hidden = true; });
+// 白底/黑底切换：简白(deepspace) ↔ 墨黑(ink)，走小星自己的 /api/ui 通道，
+// 偏好落 meta 全端同步（桌面版下一拍跟随）
+$("btnTheme").addEventListener("click", async () => {
+  await fetch("/api/ui", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ background: currentBg === "ink" ? "deepspace" : "ink" }),
+  });
+});
 // ---------- 入页还原聊天记录 ----------
 // 记录以 obs 落盘（用户/小星 told+text），服务器重启也不丢；
 // 这里把它读回来补气泡，之后才决定要不要放欢迎语。

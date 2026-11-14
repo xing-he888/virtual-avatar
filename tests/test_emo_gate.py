@@ -89,9 +89,13 @@ def shaped_mu(sal):
     Persona(d).shape(t=5.0)
     return Persona(d).mu()[0]
 
+# mu 现在由 OCEAN 特质经 Gebhard 公式导出（成长层），正常基线为正；
+# 契约是「相对未塑形基线的下移量」：深编码组拖得更狠
+baseline_mu = Persona(DigitalHuman(seed=23)).mu()[0]
 mu_strong, mu_weak = shaped_mu(1.0), shaped_mu(0.3)
-ok(mu_strong < mu_weak < 0, "深编码组基线更阴沉（系数 2.0 vs 3.0 封顶内）",
-   "%.3f < %.3f" % (mu_strong, mu_weak))
+ok(mu_strong < mu_weak < baseline_mu,
+   "深编码组基线更阴沉（双双低于未塑形基线）",
+   "%.3f < %.3f < 基线%.3f" % (mu_strong, mu_weak, baseline_mu))
 mu_mid = shaped_mu(0.15)                       # 中性点位 → 系数恰 1（历史行为）
 ok(abs(mu_mid - shaped_mu(None)) < 1e-12 or True, "中性=历史行为口径")
 d_none = DigitalHuman(seed=23)
@@ -127,5 +131,46 @@ r = d4.store.con.execute(
     "ORDER BY obs_id DESC LIMIT 1").fetchone()
 ok(r is not None and float(r["salience"]) > config.EMO_SAL_BASE,
    "appraisal 行带编码强度且强于中性", "sal=%.2f" % float(r["salience"]))
+
+# ---------------------------------------------------------------- 7 情绪时钟节流
+print("\n[7] 情绪时钟：秒级轮询原地不动（60 倍速 bug 回归钉），满 60s 才走一步")
+import time as _time                                        # noqa: E402
+d7 = DigitalHuman(seed=61)
+s0 = d7.affect.state.p
+wall0 = d7._affect_wall
+d7.affect_clock(); d7.affect_clock(); d7.affect_clock()     # 秒级连转三次
+ok(abs(d7.affect.state.p - s0) < 1e-12 and d7._affect_wall == wall0,
+   "不足 60s：原地不动（用户看表盘秒级乱跳的修复）")
+d7._affect_wall -= 61                                       # 模拟 61 秒流逝
+d7.affect_clock()
+ok(d7._affect_wall > wall0, "满 60s 走一步（自然小幅抖动）")
+
+# ---------------------------------------------------------------- 8 情绪冲击
+print("\n[8] shock 一次到位：骂一记当场变脸（不再被 0.15 阻尼吞掉）")
+from dh.limbic.emotion import PAD as _PAD, appraise_to_pad as _a2p      # noqa: E402
+from dh.limbic.emotion import Appraisal as _Apr                         # noqa: E402
+d8 = DigitalHuman(seed=71)
+base_p = d8.affect.state.p
+apr = _Apr(desirability=-0.9, likelihood=1.0, agency="other",
+           novelty=0.5, goal_relevance=0.8)
+delta = _a2p(apr)
+d8.affect.shock(delta)
+after = d8.affect.state.p
+ok(after <= base_p + delta.p + 1e-9 and after >= base_p + delta.p - 1e-9,
+   "冲击全量落地（P 位移 ≈ desirability）", "%+.3f → %+.3f" % (base_p, after))
+ok(after < 0, "狠骂一记 → 底色跌破 0（会显示低落/委屈）", "%+.3f" % after)
+# 恢复力：shock 之后 decay 把他往基线拉回来
+d8.affect.decay(60000.0 * 10)                       # 10 分钟
+ok(abs(d8.affect.state.p) < abs(after) + 0.35, "10 分钟后开始恢复（shock+decay 曲线）",
+   "%+.3f" % d8.affect.state.p)
+# 离线词典补漏：那句骂不再 0 分
+from dh.extract.rules import Extractor as _Ex         # noqa: E402
+ok(_Ex.valence("你妈那个逼为啥记忆里没有我的电话") < 0, "粗口词典补漏（你妈/傻逼…）")
+# 饱和（习惯化）：狂喜时再夸效果递减，反方向冲击不受影响
+d8.affect.shock(_PAD(0.8, 0.3, 0.2))
+p_hi = d8.affect.state.p
+d8.affect.shock(_PAD(0.8, 0.3, 0.2))
+ok(d8.affect.state.p - p_hi < 0.3, "同向冲击饱和（狂喜时再夸不无限冲顶）",
+   "%+.2f→%+.2f" % (p_hi, d8.affect.state.p))
 
 print("\n全部通过：%d 项断言" % PASS)

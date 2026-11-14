@@ -84,6 +84,18 @@ def collect_context(dh, question=None, k=None, parsed=None, t_now=None):
             "ORDER BY written_t DESC LIMIT ?", (ent, k)).fetchall()
         for r in rows:
             _add_fact(ent, r["predicate"], r["value"], r["status"], r["rel"])
+        # 本人改口协议（回答层）：近窗内被本人撤回的行回进上下文，打
+        # 【已改口】标——「记着你的更正」是拟人细节，失忆式抹掉反而吓人；
+        # 限条数防挤占正常格（2026-11 改口协议设计，裁决点 2：回）。
+        t_anchor = t_now or dh.t
+        gone = dh.store.con.execute(
+            "SELECT predicate,value,rel FROM fact "
+            "WHERE entity=? AND status='retracted' AND valid_to >= ? "
+            "ORDER BY valid_to DESC LIMIT ?",
+            (ent, t_anchor - config.RETRACTED_CONTEXT_DAYS * 86400.0,
+             config.RETRACTED_CONTEXT_MAX)).fetchall()
+        for r in gone:
+            _add_fact(ent, r["predicate"], r["value"], "retracted", r["rel"])
 
     # 精确路的 id 直接当图扩散种子（不是靠语义路反推）
     for ent in ents:
@@ -105,9 +117,13 @@ def collect_context(dh, question=None, k=None, parsed=None, t_now=None):
     disp = disposition(dh)
     mood = float(disp.mood)
     k_b = disp.scaled_k(k)             # 激动时放宽筐、平静时收窄
+    # 取侧性格杠杆（用户提案「存取对记忆加权」）：特质 N 进情节池的遗忘
+    # 曲线——敏感的人忘不掉伤心事、皮实的人翻篇快（retrieve._pool_emo）
+    g = getattr(dh, "growth", None)
+    n_trait = g.traits.get()["N"] if g is not None else None
     try:
         hits = dh.retriever.recall(query_text=question, mood=mood,
-                                   t_now=t_now, k_gate=k_b)
+                                   t_now=t_now, k_gate=k_b, n_trait=n_trait)
     except Exception:                      # 检索坏了不能拖垮对话
         hits = []
     ctx["hits"] = list(hits)
@@ -187,7 +203,12 @@ def render_memory_block(dh, ctx):
     lines = []
     for ent, pred, val, status, rel in ctx["facts"]:
         tag = config.REL_LABEL.get(rel, "?")
-        if status != "active":
+        if status == "retracted":
+            # 与「已失效」（superseded/被新值顶掉）区分：改口是用户本人的
+            # 更正，LLM 应当知道并遵守，不许把旧行当现行事实复述
+            lines.append("【%s·已改口】%s的%s曾是%s（后来本人撤回了）"
+                         % (tag, ent, pred, val))
+        elif status != "active":
             lines.append("【%s·已失效】%s的%s曾是%s" % (tag, ent, pred, val))
         else:
             lines.append("【%s】%s的%s是%s" % (tag, ent, pred, val))

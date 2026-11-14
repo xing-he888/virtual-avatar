@@ -28,15 +28,19 @@ from ..context import collect_context, render_memory_block
 from ..core.tick import looks_like_question
 
 # ---------------------------------------------------------------- 小工具
-def _ensure_heard(store, hear_out, text, speaker, t):
+def _ensure_heard(store, hear_out, text, speaker, t, valence=None):
     """问句不断言（tick 跳过 writer），但经历层的原话永远要留底。
 
     聊天记录重建、时光回溯、补记锚都靠它。没有这一步，CLI 里用户的问句
     一条都不进库——网页端有 `_ensure_heard` 兜着，CLI 从来没兜过。
+
+    valence（审查三轮 F1）：hear 已算出的效价随留底行落库——带情绪的
+    问句在 tick 写回步不落 obs，这行是它在成长证据层的唯一一笔；不带
+    （问句听成中性 / 小星自己的回话）保持 NULL。
     """
     if not (hear_out.get("obs_ids") or []):
         oid = store.add_obs(t, "told", "text", text, source=speaker,
-                            rel=1, seg_bnd=0.0)
+                            rel=1, seg_bnd=0.0, valence=valence)
         hear_out["obs_ids"] = [oid]
     return hear_out
 
@@ -98,9 +102,11 @@ def _disp(dh):
 
 # ---------------------------------------------------------------- 节点
 def node_guard(dh, st):
-    """自报家门 + 问句解析。问句路由全流程只此一次（属主消解/线索/语义）。"""
+    """自报家门 + 教养检测 + 问句解析。问句路由全流程只此一次。"""
     st["t"] = time.time()
     st["ack"] = llm_bridge.register_owner_if_intro(dh, st["text"])
+    st["nurture"] = (dh.growth.detect_nurture(st["text"])
+                     if getattr(dh, "growth", None) else None)
     st["parsed"] = dh.qrouter.route(st["text"])
     # 会走 LLM 的话先听成中性——情绪改由 LLM 按性格的评价驱动；
     # 词典只在离线/快路径兜底，避免同一件事计两次
@@ -115,7 +121,12 @@ def node_perceive(dh, st):
     「用户说过这句话」都不会丢。"""
     ho = dh.hear(st["text"], speaker="用户", t=st["t"],
                  valence=0.0 if st["will_llm"] else None)
-    _ensure_heard(dh.store, ho, st["text"], "用户", st["t"])
+    _ensure_heard(dh.store, ho, st["text"], "用户", st["t"],
+                  valence=ho.get("valence_sourced") or None)
+    # 效价来源标记当场捕获进本轮状态（审查 P1-2「一句话至多一个效价
+    # 来源」）：随本句 hear 返回值走，node_affect 经 already_sourced
+    # 显式传给 apply_appraisal——不挂共享字段，插话覆盖不了上一句的判定
+    st["valence_sourced"] = bool(ho.get("valence_sourced"))
     ho["trust"] = _trust(st["text"], st["parsed"], dh)
     dh.store.commit()                      # ← 用户的话在此刻落盘（~200 µs）
     st["hear_out"] = ho
@@ -143,6 +154,12 @@ def node_plan(dh, st):
     强行让模型展开，产出的是最长、最不像的那种。
     """
     st["route"], st["route_why"] = policy.decide(dh, st)   # try_fast/disp 已落回 st
+    if st.get("nurture") and st["route"] != "ack":
+        # 教养指令优先于普通对话（仅次于自报家门）：直接应答，性格移动
+        # 走证据层在下次巩固生效——渐变，不是开关
+        st["route"], st["route_why"] = "nurture", "教养指令：%s%+d" % (
+            st["nurture"]["trait"], st["nurture"]["direction"])
+        return {}
     if st["route"] in ("ack", "defer", "offline"):
         return {}                          # 离线没有 RAG 可拼；ack/defer 不需要
     # 走 LLM 的话（含 fast 弃权降级）先把 prompt 备好（组装要读 ctx，所以在锁内）
@@ -166,6 +183,13 @@ def node_compose(dh, st):
         st["reply"], st["flags"], st["sources"] = st["ack"], [], []
         st["used_memory"], st["stale"], st["cited"] = True, False, []
         st["leg"] = "ack"
+        return {}
+    if route == "nurture":
+        mv = st["nurture"]
+        st["reply"] = mv["ack"]
+        st["flags"], st["sources"], st["cited"] = [], [], []
+        st["used_memory"], st["stale"] = False, False
+        st["leg"] = "nurture"
         return {}
     if route == "defer":
         st["reply"] = policy.defer_line(dh, st.get("disp"))
@@ -244,7 +268,8 @@ def node_affect(dh, st):
     自己的话入记忆之前——否则 TTS 用的还是上一轮的情绪。"""
     if st.get("route") == "ack":
         return {}
-    llm_bridge.apply_appraisal(dh, st.get("apr"), st["text"])
+    llm_bridge.apply_appraisal(dh, st.get("apr"), st["text"],
+                               already_sourced=st.get("valence_sourced", False))
     return {}
 
 
@@ -264,6 +289,13 @@ def node_finish(dh, st):
     if hint:
         try:
             dh.qrouter.learn(hint[0], hint[1], t=t2)
+        except Exception:                  # noqa: BLE001
+            pass
+    # 教养经历落证据层（编码强度拉满，下次巩固按归因表生效）
+    nv = st.pop("nurture", None)
+    if nv:
+        try:
+            dh.growth.record_nurture({nv["trait"]: float(nv["direction"])}, t=t2)
         except Exception:                  # noqa: BLE001
             pass
     dh.store.commit()                      # 小星的话落盘

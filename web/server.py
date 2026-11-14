@@ -11,7 +11,6 @@
     GET  /api/history    聊天记录（经历层重建；清屏分界时间之后的）
     POST /api/clear_chat 清空聊天窗口（记忆和识海不动，meta 记分界时间）
     GET  /api/graph      识海：记忆星图（three.js 3D 前端的数据源）
-    POST /api/associate  「提到X，还会想起什么」：激活扩散 + 联想循环
     GET  /api/memories   记忆面板：查看 / 修正 / 撤回小星记住的事实
     POST /api/correct    修正一条记忆（双时态：改值保留历史）
     POST /api/forget     撤回一条记忆（不删经历，历史回放仍可还原）
@@ -46,8 +45,8 @@ STATIC = os.path.join(HERE, "static")
 # 只接受 POST 的路由（/api/settings 例外，它 GET/POST 都有）。
 # GET 打上来给 405 而不是 404——curl 不带 -d 默认发 GET，容易踩。
 POST_ONLY = frozenset(("/api/chat", "/api/settings/test", "/api/correct",
-                       "/api/forget", "/api/shutdown", "/api/associate",
-                       "/api/speak", "/api/clear_chat"))
+                       "/api/forget", "/api/shutdown",
+                       "/api/speak", "/api/clear_chat", "/api/ui"))
 
 
 def make_handler(app, httpd=None):
@@ -72,7 +71,9 @@ def make_handler(app, httpd=None):
             ctype = {
                 ".html": "text/html; charset=utf-8",
                 ".css": "text/css; charset=utf-8",
-                ".js": "text/javascript; charset=utf-8"}.get(
+                ".js": "text/javascript; charset=utf-8",
+                ".jpg": "image/jpeg",
+                ".png": "image/png"}.get(
                     os.path.splitext(name)[1], "application/octet-stream")
             with open(path, "rb") as f:
                 body = f.read()
@@ -96,6 +97,9 @@ def make_handler(app, httpd=None):
                 self._static("style.css")
             elif route == "/app.js":
                 self._static("app.js")
+            elif route == "/avatar.jpg":
+                # 小星的头像图（ui_config.avatar_img 开关控制前端是否用）
+                self._static("avatar.jpg")
             elif route == "/api/state":
                 self._json(app.state())
             elif route == "/api/graph":
@@ -133,8 +137,13 @@ def make_handler(app, httpd=None):
                 self.wfile.write(body)
             elif route == "/api/persona":
                 from dh.limbic.persona import Persona
-                self._json(Persona(app.dh).snapshot())
+                # snapshot 会经 stage_info() 写 calib（阶段首现/晋升）——
+                # 必须持锁，否则 HTTP 线程的写会混进聊天线程的在途事务
+                with app.dh.store.lock:
+                    self._json(Persona(app.dh).snapshot())
             else:
+                # /api/ui 只收 POST（在 POST_ONLY 里，GET 会 405）；前端读
+                # 外观配置走 /api/state 的 ui 段，这里不需要 GET 分支
                 self._json(dict(error="not found"), 404)
 
         def do_POST(self):
@@ -202,18 +211,9 @@ def make_handler(app, httpd=None):
             elif route == "/api/clear_chat":
                 # 只清窗口视图；经历/记忆/识海一律不动
                 self._json(app.clear_chat())
-            elif route == "/api/associate":
-                text = (payload.get("text") or "").strip()
-                if not text:
-                    text = app.last_user_text
-                if not text:
-                    self._json(dict(error="empty"), 400)
-                    return
-                try:
-                    self._json(app.on_associate(text))
-                except Exception as exc:           # noqa: BLE001
-                    self._json(dict(error="associate-failed",
-                                    message=str(exc)[:300]), 500)
+            elif route == "/api/ui":
+                # 小星（或用户）改前端外观：白名单校验+钳制在 set_ui 里
+                self._json(app.set_ui(payload))
             else:
                 self._json(dict(error="not found"), 404)
 

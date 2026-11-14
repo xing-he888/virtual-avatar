@@ -101,7 +101,15 @@ def pick_tone(pad, novelty=0.0):
     """
     p, a, d = float(pad.p), float(pad.a), float(pad.d)
     if p <= -0.30:
-        return "angry" if (a > 0.25 or d > 0.15) else "sad"
+        # 负效价按支配感分三种 outward 表达（OCC 常识）：
+        #   攻击性愤怒 = 低支配不深（d ≥ −0.35，冲人来的）
+        #   恐惧/发紧  = 支配深负（d < −0.35，被吓到的）——不该恶狠狠
+        #   自责闷气   = 高支配（d > 0.15，冲自己来的）——闷闷不乐不外放
+        if d < -0.35:
+            return "soft"                       # 被吓到：声音发紧变小
+        if d > 0.15:
+            return "sad"                        # 冲自己：闷闷不乐
+        return "angry" if a > 0.25 else "sad"
     if p >= 0.30:
         if a >= 0.50:
             return "loud"          # 高兴 + 高唤醒 = 外放的兴奋

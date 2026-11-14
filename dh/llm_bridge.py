@@ -40,8 +40,11 @@ def seen_fact_ids(dh, question, k=8):
             "ORDER BY written_t DESC LIMIT ?", (ent, k)).fetchall()
         ids += [int(r["fact_id"]) for r in rows]
     try:
+        _g = getattr(dh, "growth", None)
+        _n = _g.traits.get()["N"] if _g is not None else None
         for kind, rid, _s in dh.retriever.recall(query_text=question, mood=0.0,
-                                                 t_now=dh.t, k_gate=k):
+                                                 t_now=dh.t, k_gate=k,
+                                                 n_trait=_n):
             if kind == "fact":
                 ids.append(int(rid))
     except Exception:
@@ -229,10 +232,18 @@ def parse_appraisal(reply):
         return reply, None
 
 
-def apply_appraisal(dh, apr, user_text):
+def apply_appraisal(dh, apr, user_text, already_sourced=False):
     """把评价落到情绪系统（drive 注入，锁外算、锁内应用由调用方保证）。
 
     LLM 没给评价时退回小词典——离线模式全走词典；在线模式词典只是兜底。
+
+    一句话至多一个效价来源（审查 P1-2）：调用方从本句 hear 的返回值当场
+    捕获 valence_sourced（词典效价≠0，离线/已解析问句路径）并经
+    already_sourced 传入时，这里**整体跳过**——词典兜底和 LLM 标签都不
+    再叠加，成长证据只留 hear 落下的那一条、情绪只吃 hear 那一次驱动。
+    每句一份、随 hear 返回值走：不挂 dh 共享字段，插话（LLM 飞行窗口内
+    第二句 hear）覆盖不了上一句的判定。web 在线主路径先听成中性、
+    sourced=False，评价照旧由这里单独承担。
 
     D 维（支配感）以前塌成一个符号函数：`agency="other" if valence<0 else
     "circumstance"`，controllability 从不赋值（默认 0.5），实测 D 只有两个
@@ -241,6 +252,8 @@ def apply_appraisal(dh, apr, user_text):
     「谁的责任」区分：自责（self，D 升）与被压制（other，D 降）都是坏事，
     但一个让人更笃定（我搞砸了，清楚），一个让人更虚（他骂我，没底）。
     """
+    if already_sourced:
+        return None
     if apr is None:
         v = dh.valence_fn(user_text)
         if v == 0:
@@ -256,13 +269,21 @@ def apply_appraisal(dh, apr, user_text):
     if abs(delta.p) + abs(delta.a) + abs(delta.d) < 1e-6:
         return None
     with dh.store.lock:
-        dh.affect.tick(1000.0, drive=delta)
+        # 情绪冲击一次到位（不再乘 0.15 阻尼）：被狠骂一记当场变脸，
+        # 恢复交给之后的 decay——人的情绪事件曲线就是 shock + decay。
+        # 旧实现走 drive 路径被 (1-a)≈0.15 阻尼，骂一记只落 8%，
+        # 出厂亮底色下「骂了不生气」（用户实测抓出）
+        dh.affect.shock(delta)
         # 评价事件本身也入经历层（valence=desirability）——性格塑形、
         # 时光回溯都从这里取证据；obs 追加，可溯源。
         # 编码强度在评价落定后补算：此刻的 PAD 才是这一轮情绪的真实读数
-        # （web/CLI 慢路径下用户原话按纪律先听成中性，情绪住在这行里）
-        sal = emo_gate(dh.affect.state, surprise=float(apr.novelty),
-                       attention=1.0)
+        # （web/CLI 慢路径下用户原话按纪律先听成中性，情绪住在这行里）。
+        # 存侧性格加权与 tick 第 6 步同一根线：尽责（C）编码更牢
+        _g = getattr(dh, "growth", None)
+        _boost = _g.traits.encode_factor() if _g is not None else 1.0
+        sal = min(1.0, max(0.0, emo_gate(dh.affect.state,
+                                         surprise=float(apr.novelty),
+                                         attention=1.0) * _boost))
         dh.store.add_obs(time.time(), "infer", "appraisal",
                          json.dumps({"desirability": round(apr.desirability, 2),
                                      "agency": apr.agency,

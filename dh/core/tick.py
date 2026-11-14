@@ -71,9 +71,13 @@ class DigitalHuman:
         self.store.commit()
         self.affect = AffectSystem()
         self.affect.rng = np.random.default_rng(seed + 1)   # 情绪噪声也进种子
-        # 出厂≠定死：库里已有被经历塑形过的情绪基线，开机即恢复（右脑慢塑形）
-        from ..limbic.persona import Persona
-        self.affect.dyn.mu = np.array(Persona(self).mu())
+        # 出厂≠定死：成长层（OCEAN 特质 → Gebhard 公式）供给情绪基线，
+        # 开机即恢复到「被经历塑造过」的那个人；基线进 base_mu（此后
+        # refresh_mu 在每次步进时叠加昼夜偏移，塑形后走 set_base_mu 热更新）
+        from ..growth.persona import Persona as Growth
+        self.growth = Growth(self)
+        self.affect.base_mu = np.array(self.growth.mu())
+        self.affect.refresh_mu()
         # 情绪跨会话持久：状态 + 墙钟锚存 meta——重启后第一条消息进来，
         # 先按「离开时的真实时间差」让情绪演化到位（隔夜火气自然消）
         self._affect_wall = time.time()
@@ -127,18 +131,34 @@ class DigitalHuman:
         self._affect_wall = max(self._affect_wall, now)
 
     def affect_clock(self, dt_ms=None):
-        """常驻情绪时钟：没人说话时也让情绪继续演化（2 µs/次）。
+        """常驻情绪时钟：没人说话时也让情绪按**真实流逝时间**继续演化。
 
         为什么必须有：`tick()` 里 `affect.tick()` 在 `for item in attended:`
         循环内，没有感知进注意就一步都不走。实测 dh.tick(1.0) 与
         dh.tick(60.0) 推进的情绪时间都是 0 ms——离开一小时再回来，情绪是在
         开口那一刻才跳一次，中间冻住。拟人从这里就断了。
 
+        ⚠ 这里曾有一个 60 倍速 bug（用户看表盘发现情绪秒级乱跳）：
+        时钟线程每 ~1s 轮询一次，而本方法每次固定步进 EMO_CLOCK_MS=60s
+        ——情绪被 60 倍速快进、每秒重掷一次（实测 P 两秒内 0→0.09→−0.46）。
+        修复：dt 默认取**真实流逝时间**（_affect_wall 起算），不满一个
+        步长（60s）就原地不动；满 60s 走一步。步长恒 ≥ EMO_STEP_MS，所以
+        时钟**恒走确定性均值回归分支**——这是设计不是疏漏：没人对话时
+        不掷骰子（60 倍速 bug 的教训就是用户不要乱跳的情绪），空闲态的
+        情绪沿昼夜基线安静滑动；「自然抖动」只属于对话间隙（间隔 <60s
+        走随机步，人就在旁边），分支语义见 affect.decay。hear() 会刷新
+        _affect_wall，对话与时钟不会双重计时。
+
         返回推进后的 PAD（调用方可以拿去推 SSE）。
         """
-        dt_ms = config.EMO_CLOCK_MS if dt_ms is None else float(dt_ms)
+        now = time.time()
+        if dt_ms is None:
+            dt_ms = (now - self._affect_wall) * 1000.0
+            dt_ms = min(max(dt_ms, 0.0), _AFFECT_SYNC_MAX_MIN * 60000.0)
+            if dt_ms < config.EMO_CLOCK_MS:
+                return self.affect.state          # 不足一个步长：原地不动
         self.affect.decay(dt_ms)
-        self._affect_wall = max(self._affect_wall, time.time())
+        self._affect_wall = max(self._affect_wall, now)
         return self.affect.state
 
     def save_affect(self):
@@ -156,9 +176,21 @@ class DigitalHuman:
         self._sync_affect_wall(t)
         if valence is None:
             valence = self.valence_fn(text)
+        # 一句话至多一个效价来源（审查 P1-2）：本句效价 ≠0（词典兜底或调用
+        # 方显式传入）即视为已入账——情绪与成长证据都由这一笔承担，同一轮
+        # 的 apply_appraisal(already_sourced=True) 整体跳过。标记随 **本句
+        # hear 的返回值** 走、由调用方当场捕获，不挂 dh 实例共享字段：
+        # web 的插话设计（LLM 飞行窗口内第二句 hear）会覆盖共享字段，把
+        # 上一句的合法评价吞掉（竞态实测复现过）。
+        # 值直接带效价数值（0.0 = 未入账）：问句在写回步不落 obs（写回纪律），
+        # _ensure_heard 补的留底行要靠这个数把效价带上，否则带情绪的问句
+        # 在成长证据层一条都数不到（三轮审查 F1：情绪有了、证据丢了半边）。
+        sourced = float(valence) if abs(float(valence)) > 1e-9 else 0.0
         self.sensory.append(dict(text=text, speaker=speaker, t=t, valence=valence,
                                  is_question=looks_like_question(text)))
-        return self.tick()
+        rec = self.tick()
+        rec["valence_sourced"] = sourced
+        return rec
 
     def ask(self, text, t=None, record=True):
         """问它一句话：检索 -> 评估 -> 反应。返回 (Answer, 措辞, 诊断)。
@@ -181,8 +213,10 @@ class DigitalHuman:
                                           asof=t)
         else:
             ans = Answer([], abstain=True)
-        # 4 评估：被问到某人的事本身不引入情绪事件
-        self._appraise(valence=0.0, novelty=0.1)
+        # 4 评估：被问到某人的事**不引入情绪事件**——这里刻意没有任何
+        #    _appraise 调用（旧版调过 _appraise(0.0, 0.1)，被修「问句越问
+        #    越亢奋」时的早退条件恒吞掉，成了死调用，已删；留注释钉住
+        #    「问句不算情绪事件」这个决定，防止将来有人补回去）。
         self.affect.tick(1000.0, drive=self._drive)
         self._drive = None
         # 5 反应：冲突检测 -> 慢系统（默认不启动，被冲突唤醒 [DESIGN §5.1]）
@@ -265,7 +299,13 @@ class DigitalHuman:
                 continue
             _nov = 0.0 if item.get("is_question") else 0.1   # 问句不意外（同上）
             _attn = min(1.0, max(0.0, item.get("salience") or 0.0))
-            _emo_sal = emo_gate(self.affect.state, surprise=_nov, attention=_attn)
+            # 存侧性格加权（用户提案「存取对记忆加权」）：尽责（C）的人编码
+            # 更牢——gate 结果 × (1 + GROWTH_C_ENCODE·C) 后钳回 [0,1]，见
+            # traits.encode_factor；出厂 C=0.2 → ×1.08 近中性，漂了才显
+            _g = getattr(self, "growth", None)
+            _boost = _g.traits.encode_factor() if _g is not None else 1.0
+            _emo_sal = min(1.0, max(0.0,
+                emo_gate(self.affect.state, surprise=_nov, attention=_attn) * _boost))
             out = self.writer.hear(item["text"], item["t"], item["speaker"],
                                    valence=item.get("valence"),
                                    salience=_emo_sal)

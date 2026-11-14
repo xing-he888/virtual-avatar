@@ -39,12 +39,12 @@ from .emotion import (                                # noqa: F401
     autocov, estimate_theta_c2c1, estimate_theta_raw,
 )
 from .disposition import Disposition, disposition, gate   # noqa: F401
-from .persona import Persona, clamp                       # noqa: F401
+from .persona import Persona                              # noqa: F401（成长层实现）
 
 __all__ = [
     "PAD", "PAD_DIM", "Appraisal", "appraise_to_pad",
     "OUDynamics", "ReactionBuffer", "AffectSystem",
     "outlet_language", "outlet_speech", "outlet_face", "outlet_memory_gate",
     "autocov", "estimate_theta_c2c1", "estimate_theta_raw",
-    "Disposition", "disposition", "gate", "Persona", "clamp",
+    "Disposition", "disposition", "gate", "Persona",
 ]

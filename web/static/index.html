@@ -21,10 +21,45 @@
         <canvas id="dial" width="96" height="72"></canvas>
         <div class="dial-legend"><span>↑激动</span><span>←难受 愉悦→</span></div>
       </div>
-      <a class="gear" id="btnSea" href="/sea" title="识海：记忆星图（3D）">🌌</a>
-      <button class="gear" id="btnMem" title="记忆面板：查看 / 修正 / 撤回小星记住的事">🗂</button>
-      <button class="gear" id="btnClear" title="清空聊天窗口（记忆和识海不动）">🧹</button>
-      <button class="gear" id="btnSettings" title="API Key 等设置">⚙</button>
+      <a class="gear" id="btnSea" href="/sea" title="识海：记忆星图（3D）" aria-label="识海记忆星图">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3.2"/>
+          <ellipse cx="12" cy="12" rx="9" ry="4.2" transform="rotate(-24 12 12)"/>
+          <circle cx="19.6" cy="7.6" r="1.1" fill="currentColor" stroke="none"/>
+        </svg>
+      </a>
+      <button class="gear" id="btnMem" title="记忆面板：查看 / 修正 / 撤回小星记住的事" aria-label="记忆面板">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3.5" y="4.5" width="17" height="4.5" rx="1.2"/>
+          <path d="M5.5 9v8.7a1.8 1.8 0 0 0 1.8 1.8h9.4a1.8 1.8 0 0 0 1.8-1.8V9"/>
+          <path d="M10 13.2h4"/>
+        </svg>
+      </button>
+      <button class="gear" id="btnGrowth" title="成长面板：小星的性格、信任与自我认知——被经历慢慢塑造的部分" aria-label="成长面板">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 20.5v-7.5"/>
+          <path d="M12 13C12 9.6 9.4 7 5.6 7c0 3.9 2.6 6 6.4 6z"/>
+          <path d="M12 11.6c0-3.1 2.3-5.4 6-5.4 0 3.5-2.4 5.4-6 5.4z"/>
+        </svg>
+      </button>
+      <button class="gear" id="btnClear" title="清空聊天窗口（记忆和识海不动）" aria-label="清空聊天窗口">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6.9 18.9h5l6.2-6.2a1.7 1.7 0 0 0 0-2.4l-2.9-2.9a1.7 1.7 0 0 0-2.4 0l-7.4 7.4a1.7 1.7 0 0 0 0 2.4l1.5 1.7z"/>
+          <path d="M9.6 10.8l4.3 4.3"/>
+        </svg>
+      </button>
+      <button class="gear" id="btnTheme" title="白底 / 黑底切换（DeepSeek 式）" aria-label="切换白底或黑底">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"/>
+          <path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5 5l1.6 1.6M17.4 17.4 19 19M19 5l-1.6 1.6M6.6 17.4 5 19"/>
+        </svg>
+      </button>
+      <button class="gear" id="btnSettings" title="API Key 等设置" aria-label="设置">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M4 7.5h8.2"/><circle cx="15.6" cy="7.5" r="2.1"/><path d="M17.7 7.5H20"/>
+          <path d="M4 16.5h2.3"/><circle cx="9.6" cy="16.5" r="2.1"/><path d="M11.7 16.5H20"/>
+        </svg>
+      </button>
     </div>
   </header>
 
@@ -37,9 +72,19 @@
     </div>
     <div class="composer-row">
       <textarea id="input" rows="1" placeholder="跟小星说点什么…（Enter 发送，Shift+Enter 换行，可配图）"></textarea>
-      <button id="btnPic" class="assoc" title="发一张图片给小星看（他会看到并记住）">📷</button>
-      <button id="btnAssoc" class="assoc" title="拿输入框里的话题做联想：激活扩散 + 联想循环">🧠</button>
-      <button id="btnSend" class="send">发送</button>
+      <button id="btnPic" class="assoc" title="发一张图片给小星看（他会看到并记住）" aria-label="发送图片">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3.5" y="7" width="17" height="12" rx="2.5"/>
+          <path d="M8.6 7l1.3-2.1h4.2L15.4 7"/>
+          <circle cx="12" cy="13" r="3.2"/>
+        </svg>
+      </button>
+      <button id="btnSend" class="send" aria-label="发送">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 19V5"/>
+          <path d="M5.5 11.5 12 5l6.5 6.5"/>
+        </svg>
+      </button>
     </div>
     <input type="file" id="filePic" accept="image/*" hidden>
   </footer>
@@ -80,6 +125,16 @@
     <p class="hint">记错了就改：<b>改值</b>是正常修正（旧值进历史，还能回放「当时以为」）；
       <b>撤回</b>=这条整个记错了，从此不再提起。撤回不删原话，经历层永远留底。</p>
     <div class="mem-list" id="memList">加载中…</div>
+  </div>
+</div>
+
+<!-- 成长面板：性格特质 / 信任 / 自我叙事——真值在 calib 表（只插不改），这里只是视图 -->
+<div class="mask" id="growMask" hidden>
+  <div class="modal mem-modal">
+    <h2>小星的成长 <button class="close" id="btnGrowClose">✕</button></h2>
+    <p class="hint">性格不是出厂定死的：被骂、被夸、被纠正都会慢慢改变他
+      （终身漂移钳制 ±0.3——经历留疤，但不翻盘）。这里就是「此刻的他」。</p>
+    <div class="mem-list" id="growBody">加载中…</div>
   </div>
 </div>
 

@@ -53,10 +53,12 @@ _POS_WORDS = ["出院", "新车", "升", "好事", "开心", "高兴", "顺利",
               "棒", "厉害", "聪明", "可爱", "爱你", "谢谢", "帅", "好看"]
 _NEG_WORDS = ["住院", "吵架", "病", "不好", "难", "烦", "去世", "糟", "难过",
               "伤心", "痛苦", "糟糕", "担心", "紧张", "生气", "失败", "累",
-              # 骂人/攻击类——挨骂要能被感知到（委屈/生气都从这进）
+              # 骂人/攻击类——挨骂要能被感知到（委屈/生气都从这进）。
+              # 你妈/妈的/傻逼 来自真实漏检（用户实测骂了一句离线词典 0 分）
               "笨", "蠢", "傻", "憨", "滚", "废物", "白痴", "笨蛋", "蠢货",
               "傻子", "憨子", "混蛋", "坏蛋", "讨厌", "恶心", "差劲", "闭嘴",
-              "凶", "骂", "无语", "滚开", "闭口"]
+              "凶", "骂", "无语", "滚开", "闭口", "你妈", "妈的", "他妈",
+              "傻逼", "脑残", "去死", "混账", "狗屁"]
 
 # ---------------------------------------------------------------- 实体关系
 # 亲属/社会关系称呼词，全部归一到规范形（谓词只有一种写法）。
@@ -133,6 +135,134 @@ def detect_relations(body):
                 continue
             out.append((frm, r, to))
     return out
+
+
+# ---------------------------------------------------------------- 本人改口（撤回协议 L0）
+# 真实案例 2026-11：t2「我打错的了是主人」（撤回对象不在本句）、t5「你改下你的
+# 记忆我是你的主人，之前说主任是我说错了」（先主张后撤回）。语序证明 L0 单靠
+# 正则永远凑不齐「撤什么+改成什么」两端——它只做**高召回触发器 + 尽力槽位
+# 捕获**；锚解不出时由同步 LLM 指认接手（identify_retraction），落地校验在
+# writer（锚词必须在本说话人历史原话里逐字出现）。双向语序都要接。
+RETRACT_VERBS = ("说错", "记错", "打错", "敲错", "口误", "不算数", "不算",
+                 "作废", "改口", "改成", "换成")
+# 触发动词的变体过滤：句级作废形态（「那句话不算数」）
+_RETRACT_WHOLE_RE = re.compile(r"(?:那|这|刚才|之前)一?(?:句话?|段话)|之前的话|那些话")
+# 锚捕获：[时间前缀](说/记/写/打)的?TERM(的话|是我|的那事)?(触发动词)。
+# 捕获必须懒惰——贪婪会把「主任是我」整段吃进，撞上 _NAME_BLOCK 的「我」
+# 被清洗拒掉（实测踩过）。
+_RETRACT_ANCHOR_RE = re.compile(
+    r"(?:之前|刚才|上次|前面|最初)?(?:说的?|记的?|写的?|打的?)"
+    r"[「“\"']?([\u4e00-\u9fffA-Za-z0-9]{2,6}?)[」”\"']?(?:那?句话?|的话|的是)?"
+    r"(?:是我|是我记|是我说)?(?:说错|记错|打错|敲错|口误|不算数?|作废|改口)")
+# 撤回尾巴上的新主张：「……说错了，(其实|应该)是主人」「打错的了是主人」
+_RETRACT_NEW_RE = re.compile(
+    r"(?:说错|记错|打错|敲错|口误|不算|作废|改口)[了吧的啦，,、\s]*"
+    r"(?:了|的)?[，,、\s]*(?:其实|应该|本来)?[，,、\s]*(?:是|叫|当|改成|换成|想说)"
+    r"(?:你的|我的)?([\u4e00-\u9fffA-Za-z0-9]{2,6})")
+# 交换句式：「把主任改成主人」——term 与新主张一次抓全。值路（有 last_cited
+# 锚）优先级更高：CORRECT_LEAD 命中时协议根本不会被调用；这里只接无锚的
+# 关系/身份改口。
+_RETRACT_SWAP_RE = re.compile(
+    r"[把将][「“]?([\u4e00-\u9fffA-Za-z0-9]{2,6}?)[」”]?(?:改成|换成|换作)"
+    r"(?:我的|你的)?([\u4e00-\u9fffA-Za-z0-9]{2,6})")
+# 自陈身份（可独立于撤回出现）：「我是你的R」「叫我R」
+_SELF_ROLE_RE = (
+    re.compile(r"(?:我|咱)(?:就是|是|要当|想当|算)(?:你的|你的那个)([\u4e00-\u9fffA-Za-z0-9]{2,6})"),
+    re.compile(r"(?:你|您)?(?:应该?|可以|就|要)?(?:叫|称|喊)(?:我|咱)(?:做|为)?"
+               r"([\u4e00-\u9fffA-Za-z0-9]{2,6})"),
+)
+_ROLE_BLOCK = _PRONOUN | {"的话", "那句", "这个", "那个", "东西", "事情", "样"}
+
+
+class RetractionHit:
+    """L0/L1 共用的改口指认。term/new_value 均可为 None——语义见字段注释。
+
+    term          撤回锚词（必须能在说话人历史原话里逐字落地才算数）
+    new_value     新主张（自称身份槽：应为本说话人历史里可写的称呼）
+    whole_sentence 句级作废形态（「那句话不算数」→ 按 src_obs 连坐）
+    verb          命中的触发动词（日志与确认回复用）
+    """
+
+    def __init__(self, term=None, new_value=None, whole_sentence=False, verb=""):
+        self.term = term
+        self.new_value = new_value
+        self.whole_sentence = whole_sentence
+        self.verb = verb
+
+    def has_work(self):
+        return bool(self.term or self.whole_sentence or self.new_value)
+
+
+def _retraction_guards(text):
+    """守卫只拦问句（「我是不是说错了？」）。撤回权不在这里判——
+    第一人称/第二人称的歧义交给落地校验：锚词必须逐字出现在**发起人
+    自己的**历史原话里，别人的话本来就不满足（source 守卫）。"""
+    t = text.strip()
+    if not t or t[-1] in "？?":
+        return False
+    if "是不是" in t or "有没有说错" in t:
+        return False
+    return True
+
+
+def _clean_role(word):
+    """槽位捕获的词清洗：剥引号/去语气尾，校验长度与禁字；非法返回 None。"""
+    if not word:
+        return None
+    w = word.strip("「」\"'“”。．，,！!？?吧了呢哈啊呀哦")
+    if not w or len(w) < 2 or len(w) > 6:
+        return None
+    if w in _PRONOUN or w in _ROLE_BLOCK:
+        return None
+    if any(c in _NAME_BLOCK for c in w):
+        return None
+    return w
+
+
+def detect_retractions(text):
+    """L0 改口触发器。返回 RetractionHit 或 None（非改口/守卫拦下）。
+
+    只声明形态，不保证锚可落地——term 的落地校验（是否真在本说话人历史
+    原话里）在 writer.apply_correction，那里才有库。问句/第二人称指控/
+    无第一人称一律 None（误伤面写进 test_retraction 负例）。"""
+    if not _retraction_guards(text):
+        return None
+    verb = next((v for v in RETRACT_VERBS if v in text), None)
+    if verb is None:
+        return None
+    hit = RetractionHit(verb=verb)
+    # 交换句式（「把主任改成主人」）：term 与新主张一次抓全
+    m = _RETRACT_SWAP_RE.search(text)
+    if m:
+        hit.term = _clean_role(m.group(1))
+        hit.new_value = _clean_role(m.group(2))
+        return hit if hit.has_work() else None
+    # 句级作废：「那句话不算数」「之前的话作废」
+    if _RETRACT_WHOLE_RE.search(text) and verb in ("不算", "不算数", "作废"):
+        hit.whole_sentence = True
+    # 锚捕获（「之前说主任是我说错了」）
+    m = _RETRACT_ANCHOR_RE.search(text)
+    if m:
+        hit.term = _clean_role(m.group(1))
+    # 新主张捕获（「……说错了，是主人」）
+    m = _RETRACT_NEW_RE.search(text)
+    if m:
+        hit.new_value = _clean_role(m.group(1))
+    return hit if hit.has_work() else None
+
+
+def detect_self_role_claim(text):
+    """纯自陈身份（无撤回语义）：「我是你的主人」「叫我老板」。
+
+    返回 {"role": R} 或 None。只认「你的R」「叫我R」两种明确形态——
+    「是X」裸形（X 可能是人名）不在此认，交给撤回尾巴/LLM 指认。"""
+    for pat in _SELF_ROLE_RE:
+        m = pat.search(text)
+        if m:
+            role = _clean_role(m.group(1))
+            if role:
+                return {"role": role}
+    return None
 
 
 class Extractor:

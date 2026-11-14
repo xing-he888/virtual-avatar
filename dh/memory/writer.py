@@ -15,6 +15,7 @@
        但实测 bge 单句 0.12 ms、向量 512 维，一条 obs 的向量成本低于
        它的 SQLite 行本身；而漏掉原话的代价是整条记忆不可检索。]
 """
+import re
 from collections import defaultdict
 
 from .. import config
@@ -24,6 +25,26 @@ from .calib import StreamStats
 from .equiv import ValueEquivalence
 from ..extract import Extractor, detect_relations, is_segment_boundary
 from .. import extract
+
+# owner 名字清洗：错抓的词几乎都会撞上这些禁字（「我叫朱宏璟是你的主任」
+# 抓「主任」撞「主」不在禁字——所以还叠加长度与代词检查，见 _clean_owner_name）
+_OWNER_BLOCK = "的我你他她它您说叫是的"
+_OWNER_PRONOUNS = {"我", "你", "咱", "他", "她", "它"}
+
+
+def _clean_owner_name(value):
+    if not value:
+        return None
+    name = str(value).strip("「」\"'“”。．，,！!？?呀呢哈哦啊吧了呢 ")
+    # 尾部裁虚词：「我叫朱宏璟是你的主任」的贪婪捕获给出「朱宏璟是你的」，
+    # 是/你/的 都在禁字表——从尾往头剥（真名极少以这些字收尾）
+    while name and name[-1] in _OWNER_BLOCK:
+        name = name[:-1]
+    if not name or not (1 <= len(name) <= 6):
+        return None
+    if name in _OWNER_PRONOUNS or any(ch in _OWNER_BLOCK for ch in name):
+        return None
+    return name
 
 # 事实向量：无网络的确定性哈希嵌入（256 维 char 2-gram，L2 归一）。
 # 有网时把 embed_fn 换成 DashScope text-embedding-v3（1024 维）即可 [STORE §4.3]。
@@ -214,7 +235,11 @@ class Writer:
 
     def _hear_relations(self, body, t, obs_id, rel):
         """正则抽出的关系写成事实（Tier 0）。名字不在别名词典的当场学习；
-        冲突关系自动撤回。返回 (事实列表, 被撤回的旧关系列表)。"""
+        冲突关系自动撤回。返回 (事实列表, 被撤回的旧关系列表)。
+
+        revive_ok 收紧到「本人宣布」口径：说话人就是关系主体时才许复活
+        （复述自己的关系=改回旧身份）；L2 传话人替别人复活是传旧话纪律
+        的违规（2026-11 审查 C4 顺手修）。"""
         facts, retracted = [], []
         for frm, rel_word, to in detect_relations(body):
             frm = self.ex.canon(frm) or self._learn_new_entity(frm)
@@ -227,15 +252,20 @@ class Writer:
                 self._retract_conflicting_relations(frm, rel_word, to, t))
             fid, action = self.store.write_fact(
                 frm, pred, to, t, obs_id, rel=rel,
-                conf=0.9 if rel == 1 else 0.75, force_new=True, revive_ok=True)
+                conf=0.9 if rel == 1 else 0.75, force_new=True,
+                revive_ok=(rel == 1))
             facts.append(dict(fact_id=fid, action=action,
                               key="%s|%s" % (frm, pred), value=to, src=None))
         return facts, retracted
 
-    def _deref_pronouns(self, cands):
+    def _deref_pronouns(self, cands, speaker="用户"):
         """写入前的代词防护：
         「我」在说话人自己的句子里确定性地指属主（meta 表登记）——
         映射过去；没登记属主时按无锚指代处理，拒写。
+        「你」在用户的话里确定性指小星（1:1 对话，对方的锚是常量）——
+        旧版漏了这个方向，「我是你的主任」的 L1 关系候选写成
+        你|关系.主任=朱宏璟（实体「你」是代词不是人），点查永远不可达
+        （2026-11 改口协议审查 H4）。
         第三人称/集合指代无法安全消解，整条丢弃（宁可漏记 [DESIGN §6]）。
         """
         owner = self.store.get_owner()
@@ -245,6 +275,8 @@ class Writer:
                 if not owner:
                     continue
                 c.subject = owner
+            elif speaker != "小星" and c.subject == "你":
+                c.subject = "小星"
             elif c.subject in self.ANAPHORA_DROP:
                 continue
             if c.is_relation:
@@ -252,10 +284,166 @@ class Writer:
                     if not owner:
                         continue
                     c.value = owner
+                elif speaker != "小星" and c.value == "你":
+                    c.value = "小星"
                 if c.value in self.ANAPHORA_DROP:
                     continue
             out.append(c)
         return out
+
+    def maybe_register_owner_from_candidates(self, cands, speaker):
+        """owner 自愈（Tier 1 姓名候选）：owner 未登记且用户亲口报了名
+        （LLM 抽成 姓名/名字 谓词）→ 当场登记。
+
+        旧版只有「我叫X」整句收尾的正则（_SELF_INTRO_RE），句子带任何
+        后缀就废——「我叫朱宏璟是你的主任」永远登不上 owner，代词防护
+        随之把「我」候选全部静默丢弃（2026-11 审查 H1/H3，「主人」的
+        根因之一）。守卫：只认姓名谓词、值非代词/禁字、speaker 非小星、
+        已有 owner 不动（不许改名——改名走修正面板）。"""
+        if speaker == "小星" or self.store.get_owner():
+            return None
+        for c in cands:
+            if getattr(c, "predicate", "") not in ("姓名", "名字"):
+                continue
+            name = _clean_owner_name(getattr(c, "value", None))
+            if name:
+                self.store.set_owner(name, note="llm-name")
+                try:
+                    self.store.alias_learn(name, name)
+                except Exception:                    # noqa: BLE001
+                    pass
+                return name
+        return None
+
+    def register_owner_from_history(self, speaker="用户"):
+        """改口协议的属主兜底：owner 未登记时，从说话人历史原话里找
+        「我叫X」补登记（只读扫描 + 现有 set_owner，不造新事实）。
+        真实库实证：obs 22「我叫朱宏璟是你的主任」在，owner 却是空。"""
+        cur = self.store.get_owner()
+        if cur:
+            return cur
+        rows = self.store.con.execute(
+            "SELECT payload FROM obs WHERE source=? AND payload LIKE '我叫%' "
+            "ORDER BY t DESC LIMIT 20", (speaker,)).fetchall()
+        for r in rows:
+            m = re.search(r"我(?:叫|叫做|名为)([\u4e00-\u9fffA-Za-z0-9]{1,6})",
+                          r["payload"])
+            name = _clean_owner_name(m.group(1) if m else None)
+            if name:
+                self.store.set_owner(name, note="history-intro")
+                try:
+                    self.store.alias_learn(name, name)
+                except Exception:                    # noqa: BLE001
+                    pass
+                return name
+        return None
+
+    # ------------------------------------------------ 本人改口协议（执行层）
+    def _grounded_in_history(self, speaker, term):
+        """锚定校验：锚词必须逐字出现在**本说话人**的历史原话里。
+
+        LIKE 而非 obs_fts MATCH：默认分词器不切 CJK，MATCH「主任」实测
+        命中 0（2026-11 审查 H9）。这是防洗库的第一道闸——LLM 指认的
+        锚词、L0 捕获的锚词，落不到发起人自己的原话里就一个字不动。"""
+        if not term:
+            return False
+        row = self.store.con.execute(
+            "SELECT 1 FROM obs WHERE source=? AND payload LIKE ? LIMIT 1",
+            (speaker, "%" + term + "%")).fetchone()
+        return row is not None
+
+    def retract_by_anchor(self, speaker, term, t):
+        """词级撤回：来源 × 锚双重限定。
+
+        撤「说话人自己说出的、主张过 term 的」active 事实：
+        predicate=关系.term（身份槽），或 value=term（值槽，谓词不限——
+        「他住院的事我说错了」要能撤病情；值=锚 意味着说话人断言过
+        「某物是锚」，撤回主张即全部作废。误伤面由两道闸兜：来源守卫
+        （只撤自己的话）+ 锚定校验（锚必须逐字在自己的历史原话里））。
+        **不按 src_obs 全量连坐**：一句原话派生多条事实时用户通常只撤
+        其中一条（连坐是句级作废形态的事，见 retract_by_utterance）。"""
+        rows = self.store.con.execute(
+            "SELECT f.fact_id, f.entity, f.predicate, f.value FROM fact f "
+            "JOIN obs o ON o.obs_id=f.src_obs WHERE f.status='active' "
+            "AND o.source=? AND (f.predicate=? OR f.value=?)",
+            (speaker, "关系." + term, term)).fetchall()
+        out = []
+        for r in rows:
+            if self.store.retract_fact(r["fact_id"], t):
+                out.append(dict(fact_id=r["fact_id"], entity=r["entity"],
+                                predicate=r["predicate"], value=r["value"]))
+        return out
+
+    def _retract_facts_of_obs(self, obs_id, t):
+        out = []
+        for r in self.store.con.execute(
+                "SELECT fact_id, entity, predicate, value FROM fact "
+                "WHERE src_obs=? AND status='active'", (obs_id,)).fetchall():
+            if self.store.retract_fact(r["fact_id"], t):
+                out.append(dict(fact_id=r["fact_id"], entity=r["entity"],
+                                predicate=r["predicate"], value=r["value"]))
+        return out
+
+    def retract_by_utterance(self, speaker, quote, t):
+        """句级作废：quote 是说话人某句原话的逐字子串 → 该句派生的全部
+        active fact 连坐（「我那句话作废」的形态）。取最近 3 条候选里
+        最新的一条命中。"""
+        if not quote or not self._grounded_in_history(speaker, quote[:16]):
+            return []
+        row = self.store.con.execute(
+            "SELECT obs_id FROM obs WHERE source=? AND payload LIKE ? "
+            "ORDER BY t DESC LIMIT 1", (speaker, "%" + quote + "%")).fetchone()
+        return self._retract_facts_of_obs(row["obs_id"], t) if row else []
+
+    def apply_correction(self, speaker, hit, t, text, obs_id):
+        """改口协议编排：LLM/L0 只指认，执行全在这里（确定性、可 review）。
+
+        hit: rules.RetractionHit（L0 直出，或 L1 指认经校验后的形态）；
+        纯自陈身份（无撤回）也走这里（hit=RetractionHit(new_value=role)）。
+        返回 dict(retracted, written, grounded)——grounded=False = 锚没落
+        到说话人历史里，**一个字都不动**，上层诚实回话。
+        撤回按「来源×锚」；新主张写 关系.R（方向：说话人 → 小星），
+        force_new+revive_ok=True——本人当场宣布的主张就是「复活须本人
+        宣布」的那个本人（改回旧身份同样走这里，复述即复活）。
+        留痕：channel='correct' 的一行 obs（成长层「被纠正+信任」的
+        证据 SQL 认的就是 channel，2026-11 审查 C4 顺手修的口径）。"""
+        retracted, written = [], []
+        owner = self.register_owner_from_history(speaker)
+        grounded = False
+        if hit is not None and (hit.term or hit.whole_sentence):
+            if hit.term and self._grounded_in_history(speaker, hit.term):
+                grounded = True
+                retracted = self.retract_by_anchor(speaker, hit.term, t)
+            elif hit.whole_sentence:
+                quote = getattr(hit, "quote", None)
+                if quote:
+                    retracted = self.retract_by_utterance(speaker, quote, t)
+                    grounded = bool(retracted)
+                else:
+                    # 无引文的句级作废：撤回说话人最近一句原话的全部产出
+                    row = self.store.con.execute(
+                        "SELECT obs_id, payload FROM obs WHERE source=? "
+                        "AND obs_id != ? ORDER BY t DESC LIMIT 1",
+                        (speaker, obs_id)).fetchone()
+                    if row is not None:
+                        retracted = self._retract_facts_of_obs(row["obs_id"], t)
+                        grounded = bool(retracted)
+        role = (hit.new_value if hit is not None else None)
+        if role:
+            pred = "关系." + role
+            self.store.declare_pred(pred, multi=1)
+            subject = owner or ("用户" if speaker in ("用户", "我") else speaker)
+            fid, action, canonical = self._write_value(
+                subject, pred, "小星", t, obs_id, rel=1, conf=0.95,
+                force_new=True, revive_ok=True)
+            written.append(dict(fact_id=fid, action=action, entity=subject,
+                                predicate=pred, value=canonical))
+            grounded = True
+        if retracted or written:
+            self.store.add_obs(t, "told", "correct",
+                               "【本人改口】" + text[:60], source=speaker,
+                               rel=1, seg_bnd=0.0)
+        return dict(retracted=retracted, written=written, grounded=grounded)
 
     def hear_llm_candidates(self, text, t, speaker, obs_id, cands,
                             learn_entity_cb=None):
@@ -267,7 +455,9 @@ class Writer:
         learn_entity_cb(name): 新实体回调（别名回写+持久化）。
         返回 dict(fact_ids=[...], actions=[...])。
         """
-        cands = self._deref_pronouns(cands)
+        # owner 自愈（副作用调用）：登记成功与否都继续走原候选流
+        self.maybe_register_owner_from_candidates(cands, speaker)
+        cands = self._deref_pronouns(cands, speaker)
         fact_ids, actions = [], []
         # 来源分级与 hear 一致：剥出「听X说」=L2；用户/自己亲口=L1
         parsed_src = self.ex.split_source(text)[0]

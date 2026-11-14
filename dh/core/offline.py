@@ -51,27 +51,33 @@ class Offline:
         # 性格塑形：经历极性 -> 情绪基线/关系信任（极慢、有界、证据不足不动）
         try:
             Persona(self.dh).shape(t)
-        except Exception:                       # noqa: BLE001
-            pass                                # 塑形失败不影响巩固本身
+        except Exception as exc:                # noqa: BLE001
+            # 「塑形失败不影响巩固本身」是有意为之，但失败必须可观测——
+            # 静默吞掉的失败等于没发生，而且没人知道要修（审查 P3-4）
+            print("[growth] 塑形失败（不影响巩固）：%s" % exc, flush=True)
         return made
 
     def _wander_seed_facts(self, k=3):
         """游移的兜底种子：优先编码强度高的经历。
 
         人放空时更爱回味情绪重的事——种子按 obs.salience（写入时右脑 gate
-        落的）降序取，中性行（0.5）退回按时间。"""
+        落的）降序取，中性行（EMO_SAL_BASE）退回按时间。"""
         return [int(r[0]) for r in self.dh.store.con.execute(
             "SELECT f.fact_id FROM fact f JOIN obs o ON o.obs_id=f.src_obs "
             "WHERE f.status != 'retracted' "
-            "ORDER BY COALESCE(o.salience, 0.15) DESC, f.written_t DESC LIMIT ?",
-            (k,))]
+            "ORDER BY COALESCE(o.salience, ?) DESC, f.written_t DESC LIMIT ?",
+            (config.EMO_SAL_BASE, k))]
 
     # ------------------------------------------------ 心智游移
     def wander(self, t, rng, rounds=None, per_round=None, say_seed=None):
         """空闲触发。种子 = 最近进工作记忆的事 + 当前心情。
 
         返回 dict(thoughts=[联想出的话], rel=3)。写回 obs(kind='infer', rel=3)。
+        初生期不游移（孩子先学会记眼前，长大才会走神——成长层的阶段门）。
         """
+        g = getattr(self.dh, "growth", None)
+        if g is not None and not g.stage_info().get("wander", True):
+            return dict(thoughts=[], touched=0, repeat_rate=0.0, seen={})
         from ..limbic.emotion import PAD
         rounds = config.ASSOC_ROUNDS if rounds is None else rounds
         per_round = min(config.ASSOC_PER_ROUND if per_round is None else per_round,

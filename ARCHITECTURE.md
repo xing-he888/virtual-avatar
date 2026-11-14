@@ -40,12 +40,16 @@
 | | `working_mem.py` | 工作记忆，4 槽硬上限，挤掉显著性最低的 |
 | | `conflict.py` | 六信号冲突检测器 + 慢系统（显式 token 预算，默认不启动） |
 | | `offline.py` | 第 7 步：巩固（自我叙事）+ 心智游移（联想写回 rel=3） |
-| **limbic/**（右脑） | `emotion.py` | 情绪状态机：PAD + OCC/顺序评价 + OU 精确离散化 + 四出口。LLM 只指认评价维度（<appraisal>），数学负责结论 |
-| | `disposition.py` | 右脑→大脑的调制器：mood/focus/talkativeness/directness/patience/breadth 七面进控制流（gate 为情节门控预留）；大脑只从这里拿情绪 |
-| | `persona.py` | 性格慢塑形：emo_mu 基线/信任/自我叙事，真值入 calib（只插不改），persona.md 是视图 |
+| **limbic/**（右脑） | `emotion.py` | 情绪状态机：PAD + OCC/顺序评价 + OU 精确离散化 + 四出口。LLM 只指认评价维度（<appraisal>），数学负责结论。基线 mu = 性格 base_mu + 昼夜偏移（每步 refresh_mu）；长间隔回归贴「终点时刻」的基线。不变量「一句话至多一个效价来源」：hear 词典效价≠0 时本句的 apply_appraisal 整体跳过（CLI 离线/已解析问句不再双计，web/CLI 同判据） |
+| | `rhythm.py` | 昼夜节律：mu(t) = 基线 + amp·cos(2π(h−peak)/24)，24h 周期、有界、极值可查表（谷在凌晨、峰在午后到傍晚）；基线热更新走 AffectSystem.set_base_mu（塑形后立即生效，不等重启） |
+| | `disposition.py` | 右脑→大脑的调制器：mood/focus/talkativeness/directness/patience/breadth 七面进控制流（gate=情节编码门已接 obs.salience）；大脑只从这里拿情绪。**已知保留项（用户裁决 2026-11-14，暂不实现）**：①情绪淹没→缄默腿——骂哭态对有内容的继续谩骂仍走回话腿（只有 defer/terse 约束），缺「说不出话」；②编码强度的唤醒项单调无倒 U——只有「记得更牢」没有「淹没时脑子空白」。两处设计已在会话中评估过，等用户点头再接 |
+| | `persona.py` | 兼容 shim → dh/growth（性格系统已升级为成长层） |
+| **growth/**（成长层） | `traits.py` | OCEAN 五维特质真值（calib 只插不改）→ Gebhard/ALMA 公式 → PAD 基线喂 OU——情绪底色由特质算出 |
+| | `stages.py` | 发展阶段（初生→幼生→成长→成熟，只进不退）：解锁=轮数+天数+话题多样性；调制学习率/游移/话长/信任建立（trust_mult，只放大正面增量） |
+| | `persona.py` | 塑形引擎：归因规则表 + salience 加权 + EMA 微移 + 漂移钳制（出厂±0.3）+ 里程碑自我叙事；三个塑造接口（自主 shape / 对话式教养 nurture / 编程 shape_direct）；信任随经历漂移（非对称：破坏快建立慢，独立水位线单条结账）；恢复力按**经过时间**指数结算（τ=585 天：挂机一天≈0.17%、整月≈5%——旧「每次巩固回拉 1%」被空闲线程 120s 一次的节奏在一天内全额回滚）；特质写入时间戳只进不退；证据窗口带上界（未来行不跨巩固重复计费）；行为面系数放大到满漂移跨话语模式阈值（旧系数漂满也感知不到）；提示词「性格现状」把漂移译成第一人称祈使句（漂多少说多少）；前端 🌱 成长面板消费 /api/persona |
 | **memory/** | `store.py` | SQLite 五区：obs（追加锁死）/ fact（双时态）/ event-mention-slot / vec / calib |
 | | `writer.py` | 写回步：来源分级、传旧话不复活、关系互斥撤回、代词防护 |
-| | `retrieve.py` | 三条检索路：点查（微秒）/ 语义 top-k / 激活扩散；幻觉治理措辞在这里落地 |
+| | `retrieve.py` | 三条检索路：点查（微秒）/ 语义 top-k / 激活扩散；幻觉治理措辞在这里落地。情绪与性格都加权在「存取」上：存=编码强度 gate（唤醒/惊讶/注意 × C 尽责增益），取=情节池遗忘减速（强编码老化慢 × N 神经质只弯负性记忆的曲线）+ 情绪一致召回（mood×valence） |
 | | `kernel.py` | 遗忘的时间核：对数正态（50,465 条真实消息拟合，推翻指数） |
 | | `graph_layer.py` | 激活图：share/link/sim 三类边、3 跳扩散、联想循环（ρ/K/抽样） |
 | | `embed.py` | 文本→向量：bge-small-zh-v1.5（CLS pooling，512 维），缺模型降级回 hash256 |
@@ -116,7 +120,8 @@
    不写、不删任何经历行。
 4. **来源分级 L0-L4 → 措辞**（我看到 / 你告诉过我 / 听X说 / 我猜）；过期 → 降级措辞；弃权放最后。
 5. **LLM 只在最后一步出现**——点查/语义/扩散都是数学；LLM 抽取值必须逐字落地于原文。
-6. **同种子同结果**：连情绪噪声都进 seed；确定性哈希嵌入（不用内置 hash()）。
+6. **同种子同结果**：连情绪噪声都进 seed；昼夜节律的时刻进可注入的
+   `affect.clock`（测试传固定 epoch）；确定性哈希嵌入（不用内置 hash()）。
 7. 每个参数在 `config.py` 里标出处；被真实数据推翻的参数不在代码里。
 8. **一句问话只落一条 obs**：问句被 tick 跳过写回（问句不断言），原话由
    `_ensure_heard()` 补底；此后调用 `dh.ask(text, record=False)`，

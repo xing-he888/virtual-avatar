@@ -67,6 +67,13 @@ function addBubble(role, text, extra) {
   av.style.fontSize = "18px";
   av.textContent = role === "user" ? "🧑" : (extra && extra.mood ? extra.mood.emoji : "🙂");
   const col = document.createElement("div");
+  if (extra && extra.image) {                        // 用户发的图片（发送时 dataURI / 历史 /img/）
+    const im = document.createElement("img");
+    im.className = "msg-img";
+    im.src = extra.image;
+    im.title = "发过的图片（缩略图留在项目 data/images/）";
+    col.appendChild(im);
+  }
   const b = document.createElement("div");
   b.className = "bubble";
   b.textContent = text;
@@ -94,6 +101,7 @@ function addBubble(role, text, extra) {
       };
       meta.appendChild(fix);
     }
+    if (extra.late) meta.appendChild(chip("think", "迟到的话——你插话时它还在想"));
     col.appendChild(meta);
   }
   row.append(av, col);
@@ -148,48 +156,160 @@ function thinkingBubble() {
   return { row, bubble: b };
 }
 
+// ---------- 图片发送（他会真的「看到」） ----------
+let pendingImage = null;
+
+function compressImage(file, done) {
+  const rd = new FileReader();
+  rd.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      const W = 768;                                 // 和 vision/camera.py 同一口径
+      const scale = Math.min(1, W / img.width);
+      const cv = document.createElement("canvas");
+      cv.width = Math.round(img.width * scale);
+      cv.height = Math.round(img.height * scale);
+      cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+      done(cv.toDataURL("image/jpeg", 0.8));
+    };
+    img.src = rd.result;
+  };
+  rd.readAsDataURL(file);
+}
+
+function showPreview(uri) {
+  const box = $("picPreview");
+  box.querySelector("img").src = uri;
+  box.hidden = false;
+}
+
+function clearPreview() {
+  pendingImage = null;
+  const box = $("picPreview");
+  box.hidden = true;
+  // 必须移除属性而不是置空串：空 src 会被 Safari 当相对 URL 解析成本页，
+  // 画一个破图图标
+  box.querySelector("img").removeAttribute("src");
+}
+
 // ---------- 发送 ----------
+// 异步纪律：发送按钮从不锁死——小星"在想"的时候你随时插话，
+// 插话立即进入下一轮；被插断的那句想完会带「迟到的话」标记回来。
 async function send() {
   const input = $("input");
   const text = input.value.trim();
-  if (!text) return;
+  if (!text && !pendingImage) return;
+  const image = pendingImage;                        // 图片随消息一起走
   input.value = "";
-  $("btnSend").disabled = true;
-  addBubble("user", text);
+  clearPreview();
+  const userRow = addBubble("user", text, { image });
   const th = thinkingBubble();
   try {
     const r = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(image ? { text, image } : { text }),
     });
     const data = await r.json();
     th.row.remove();
     if (data.error === "llm-failed") {
       addBubble("xiaoxing", "（调用模型失败：）" + (data.message || "接口异常"),
                 { mood: { emoji: "😔", p: 0, a: 0 } });
+    } else if (data.voice) {
+      // 微信式语音条：音频不落盘，文字进记忆
+      addVoiceBubble(data.voice.seconds, data.voice.data, data.text);
+      applyMood(data.mood);
     } else {
       const b = addBubble("xiaoxing", "", data);
-      // 回复一到就重新可用：用户可以边看打字机动画边插话（真实聊天亦然）。
-      // 等动画打完才解锁会让固定间隔的连续发送被吞掉。
-      $("btnSend").disabled = false;
       // 回复延迟里带一点"想想"的停顿：唤醒低时更从容（克制的表达）
       const preDelay = 220 + 260 * Math.max(0, 1 - Math.abs(data.mood.a));
       setTimeout(() => typeOut(b, data.text || data.reply, data.mood.rate, () => {
-        $("btnSend").disabled = false;
         input.focus();
       }), preDelay);
       applyMood(data.mood);
     }
   } catch (e) {
     th.row.remove();
+    // 发送失败：把这条消息从界面上收回去，图片放回预览框——
+    // 否则图既不在输入框也不在预览里，用户只能重新挑一次文件
+    userRow.remove();
+    if (image) { pendingImage = image; showPreview(image); }
     addBubble("xiaoxing", "（网络异常：" + e.message + "）", { mood: { emoji: "😔", p: 0, a: 0 } });
-    $("btnSend").disabled = false;
   }
   refreshState();
 }
 
-// ---------- 状态轮询 ----------
+// ---------- 语音条（微信式，CosyVoice）----------
+// 发不发语音由后端 agent 自己决定（send_voice 工具）：用户只是正常说话，
+// 模型判断此刻发语音更应景时才回一条语音条。前端不提供「把上句话念出来」
+// 的入口——那会和 agent 的判断打架。
+// 前端只负责播放：音频由服务端合成进内存、base64 直达前端——本地零文件留存，
+// 「发过语音」作为经历写进记忆（只有摘要）。
+// Safari 只允许「点击手势内」出声——先播 0 字节静音 wav 解锁元素。
+let _audioEl = null;
+let _activeVoiceBar = null;
+const _SILENT_WAV =
+  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
+
+function unlockAudio() {
+  if (!_audioEl) {
+    _audioEl = new Audio();
+    _audioEl.preload = "auto";
+    _audioEl.onended = () => {
+      if (_activeVoiceBar) {
+        const i = _activeVoiceBar.querySelector(".vicon");
+        if (i) i.textContent = "▶";
+        _activeVoiceBar = null;
+      }
+    };
+  }
+  _audioEl.src = _SILENT_WAV;
+  _audioEl.play().catch(() => {});
+}
+
+function addVoiceBubble(seconds, src, tip) {
+  const row = document.createElement("div");
+  row.className = "msg xiaoxing";
+  const av = document.createElement("div");
+  av.className = "avatar";
+  av.style.width = av.style.height = "34px";
+  av.style.fontSize = "18px";
+  av.textContent = "🙂";
+  const col = document.createElement("div");
+  const b = document.createElement("div");
+  b.className = "bubble voice-bar" + (src ? "" : " dead");
+  b.innerHTML = '<span class="vicon">' + (src ? "▶" : "🔇") + "</span> 语音条 " +
+    '<span class="vlen">' + seconds + '″</span>';
+  if (tip) b.title = tip;
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.appendChild(chip("", "语音条 · 本地不留存"));
+  col.appendChild(b);
+  col.appendChild(meta);
+  row.append(av, col);
+  chatEl.appendChild(row);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  if (!src) {
+    b.title = "语音条不留档——这条只剩记忆里的摘要";
+    return;
+  }
+  b.onclick = () => {
+    if (!_audioEl) unlockAudio();
+    if (_activeVoiceBar === b) {          // 再点 = 暂停
+      _audioEl.pause();
+      b.querySelector(".vicon").textContent = "▶";
+      _activeVoiceBar = null;
+      return;
+    }
+    _audioEl.src = src;
+    _audioEl.play().then(() => {
+      if (_activeVoiceBar) _activeVoiceBar.querySelector(".vicon").textContent = "▶";
+      _activeVoiceBar = b;
+      b.querySelector(".vicon").textContent = "⏸";
+    }).catch(() => { b.title = "浏览器拦截了播放——再点一次就出声"; });
+  };
+}
+
 // ---------- 状态轮询 ----------
 let lastWanderT = null;
 let stateFirst = true;       // 首次快照只记基线，不弹旧游移
@@ -242,6 +362,19 @@ async function refreshState() {
     } else {
       llm.textContent = "未配置 API Key —— 离线模式：记忆问答可用";
     }
+    const tts = $("ttsState");
+    if (s.tts) {
+      if (s.tts.state === "ready") {
+        tts.textContent = `🔊 语音就绪（${s.tts.device}）`;
+      } else if (s.tts.state === "failed") {
+        tts.textContent = "🔇 语音不可用";
+        tts.title = s.tts.error || "";
+      } else if (!s.tts.supported) {
+        tts.textContent = "🔇 未配置语音模型（见 voice/）";
+      }
+      // untried + supported：不写文案——语音由小星自己决定何时发，
+      // 页面上没有「点一下念出来」的按钮，提示它反而误导
+    }
   } catch (e) { /* 服务没起，忽略 */ }
 }
 
@@ -287,7 +420,13 @@ async function testConn() {
 async function associate() {
   const input = $("input");
   const text = input.value.trim();
-  if (!text) return;
+  if (!text) {
+    // 空输入不再静默——告诉他这个按钮怎么用
+    addBubble("xiaoxing", "（🧠 是联想：在输入框里写个话题——比如「老王」——"
+              + "我再顺着它把相关的记忆都点亮给你看。）",
+              { mood: { emoji: "🙂", p: 0, a: 0 } });
+    return;
+  }
   input.value = "";
   $("btnAssoc").disabled = true;
   const th = thinkingBubble();
@@ -418,7 +557,52 @@ $("btnSave").addEventListener("click", saveSettings);
 $("btnTest").addEventListener("click", testConn);
 $("btnMem").addEventListener("click", openMemories);
 $("btnMemClose").addEventListener("click", () => { $("memMask").hidden = true; });
+// ---------- 入页还原聊天记录 ----------
+// 记录以 obs 落盘（用户/小星 told+text），服务器重启也不丢；
+// 这里把它读回来补气泡，之后才决定要不要放欢迎语。
+const GREETING = "我醒着呢。跟我说的话我都记着——换号、搬家这种事，过几天再问我也答得上来。右上角⚙里配好 API Key，我就能好好说话。";
+
+async function restoreHistory() {
+  let restored = false;
+  try {
+    const r = await fetch("/api/history");
+    const s = await r.json();
+    for (const rec of s.history || []) {
+      if (rec.channel === "image") {
+        // 用户发过的图：缩略图存档在项目 data/images/
+        addBubble("user", rec.text || "（一张图）", { image: "/img/" + rec.image });
+      } else if (rec.role === "user") addBubble("user", rec.text);
+      else if (rec.channel === "voice") addVoiceBubble(rec.seconds || 0, null, rec.text);
+      else addBubble("xiaoxing", rec.text, rec);
+      restored = true;
+    }
+  } catch (e) { /* 服务没起，忽略 */ }
+  if (!restored) {
+    addBubble("xiaoxing", GREETING, { mood: { emoji: "🙂", p: 0, a: 0 } });
+  }
+}
+
+// ---------- 清空聊天窗口 ----------
+// 只清视图 + 记分界时间（持久）；记忆/识海/经历一律不动。
+async function clearChat() {
+  if (!confirm("清空聊天窗口？\n记忆和识海不受影响——小星依然记得聊过的内容。")) return;
+  try {
+    await fetch("/api/clear_chat", { method: "POST", body: "{}" });
+  } catch (e) { /* 服务没起也照常清视图 */ }
+  chatEl.innerHTML = "";
+  addBubble("xiaoxing", "（窗口已清空。聊过的内容我都记得——直接继续就行。）",
+            { mood: { emoji: "🙂", p: 0, a: 0 } });
+  refreshState();
+}
+
 refreshState();
 setInterval(refreshState, 4000);
-addBubble("xiaoxing", "我醒着呢。跟我说的话我都记着——换号、搬家这种事，过几天再问我也答得上来。右上角⚙里配好 API Key，我就能好好说话。",
-          { mood: { emoji: "🙂", p: 0, a: 0 } });
+restoreHistory();
+$("btnClear").addEventListener("click", clearChat);
+$("btnPic").addEventListener("click", () => $("filePic").click());
+$("filePic").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (f) compressImage(f, (uri) => { pendingImage = uri; showPreview(uri); });
+  e.target.value = "";
+});
+$("picPreview").querySelector(".pic-x").addEventListener("click", clearPreview);

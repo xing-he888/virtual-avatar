@@ -83,7 +83,7 @@ body {
 
 /* ---------- 输入区 ---------- */
 .composer {
-  display: flex; gap: 10px; padding: 12px 16px;
+  display: flex; flex-direction: column; gap: 10px; padding: 12px 16px;
   background: var(--panel); border-top: 1px solid #2c2840;
 }
 .composer textarea {
@@ -155,3 +155,71 @@ body {
 .mem-meta { display: flex; gap: 4px; flex-shrink: 0; }
 .mem-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .mem-actions button { font-size: 12px; padding: 3px 10px; }
+
+/* ---------- 微信式语音条 ---------- */
+.voice-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 130px;
+  cursor: pointer;
+  user-select: none;
+}
+.voice-bar .vicon {
+  font-size: 15px;
+}
+.voice-bar .vlen {
+  margin-left: auto;
+  opacity: .75;
+  font-size: 12px;
+}
+.voice-bar:not(.dead):hover {
+  filter: brightness(1.15);
+}
+.voice-bar.dead {
+  opacity: .55;
+  cursor: default;
+}
+
+/* ---------- 图片消息 / 预览 ---------- */
+.msg-img {
+  display: block;
+  max-width: 220px;
+  max-height: 220px;
+  border-radius: 10px;
+  margin-bottom: 6px;
+  border: 1px solid #45405e;
+}
+.composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+.composer-row textarea { flex: 1; }
+.pic-preview {
+  position: relative;
+  margin-bottom: 8px;
+  display: inline-block;
+  align-self: flex-start;
+}
+/* 同 .mask[hidden]：作者写的 display 会盖过 UA 的 [hidden]{display:none} */
+.pic-preview[hidden] { display: none; }
+.pic-preview img {
+  max-width: 140px;
+  max-height: 140px;
+  border-radius: 10px;
+  border: 1px solid #45405e;
+  display: block;
+}
+.pic-preview .pic-x {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  border: none;
+  border-radius: 50%;
+  width: 22px;
+  height: 22px;
+  cursor: pointer;
+  background: rgba(0,0,0,.6);
+  color: #fff;
+}

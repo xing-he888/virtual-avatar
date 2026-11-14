@@ -60,3 +60,18 @@ venv/
 web/api_settings.local.json
 # 聊天页的记忆库
 data/
+
+# ---- CosyVoice 语音合成：源码 clone + 模型权重（几个 GB，不进库）----
+# 重现步骤见 voice/tts_mac.py 顶部说明（clone + submodule + modelscope download）
+third_party/
+
+# ---- 嵌入模型权重：95 MB 二进制，不进库 ----
+# 重现：见 dh/memory/embed.py 顶部说明
+#   curl -sL -k https://huggingface.co/BAAI/bge-small-zh-v1.5/resolve/main/<file>
+# 缺了它自动降级回 hash256（dh/memory/embed.py:make_embed_fn）
+models/*/
+# ---- Chroma 索引：派生数据，随时可整目录删，重开按 vec 表重建 ----
+data/chroma/
+
+# ---- 编辑器本地配置 ----
+.vscode/

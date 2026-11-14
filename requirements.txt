@@ -7,6 +7,10 @@
 # 摄像头视觉（vision/camera.py）使用 OpenAI 兼容的多模态接口看图。
 
 numpy==1.26.4
+torch                 # dh/memory/embed.py 跑 bge 嵌入（CPU 就够，单句 2.2 ms）
+transformers==4.51.3  # 同上：CLS pooling，不引 sentence-transformers
+chromadb==1.5.9       # dh/memory/vecindex.py：向量索引（派生，可整目录删）
+scipy==1.17.1          # 激活图的 CSR 稀疏矩阵（dh/memory/graph_layer.py）
 openai==3.41.0
 langgraph==1.2.18
 python-dotenv==1.2.4

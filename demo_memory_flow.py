@@ -20,7 +20,7 @@ sys.path.insert(0, ".")
 import numpy as np  # noqa: E402
 
 from dh import config, world  # noqa: E402
-from dh.tick import DigitalHuman  # noqa: E402
+from dh.core.tick import DigitalHuman  # noqa: E402
 
 SEP = "=" * 68
 
@@ -123,8 +123,8 @@ def main():
     # E48 的合成世界：1200 条记忆、40 个人、目标人物只有 8 条、3 个枢纽各 180 条。
     # （30 天世界的事实行按值变动去重后只有 22 行，是点查的功劳，
     #   但对联想演示来说节点太少——联想演示用 E48 同款记忆库。）
-    from dh.store import MemoryStore
-    from dh.graph_layer import ActivationGraph
+    from dh.memory.store import MemoryStore
+    from dh.memory.graph_layer import ActivationGraph
     s4 = MemoryStore()
     s4.declare_pred("电话", 0)
     NF, NP, TARGET = 1200, 40, 7
@@ -141,9 +141,13 @@ def main():
         fid, _ = s4.write_fact("P%02d" % ppl[i], "电话", "138%08d" % i, float(i), o)
         v = _rngv.standard_normal(64).astype(np.float32)
         v /= np.linalg.norm(v)
-        s4.put_vec("fact", fid, v)
+        # model 记账：这 64 维是随机向量、不是任何嵌入模型的输出，
+        # 单独标一个名字，免得跟 bge 的 512 维混在一次 load_matrix 里
+        s4.put_vec("fact", fid, v, model="demo-random64")
     g4 = ActivationGraph(s4)
-    seeds = {int(own[0]): 1.0, int(own[1]): 1.0}
+    # own 是数组下标，fact_id = 下标 + 1。写错这一行，种子就指向别人——
+    # 之前打印的 58/0.517 就是错种子 + 零权筐两个 bug 叠出来的
+    seeds = {int(own[0]) + 1: 1.0, int(own[1]) + 1: 1.0}
     res = g4.associate(seeds, np.random.default_rng(4), rounds=6, per_round=20,
                        basket=config.ASSOC_BASKET)
     print("    种子：目标人物的 2 条记忆 -> 连想 6 轮 × 20 条")

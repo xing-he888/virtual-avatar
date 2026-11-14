@@ -23,6 +23,7 @@
       </div>
       <a class="gear" id="btnSea" href="/sea" title="识海：记忆星图（3D）">🌌</a>
       <button class="gear" id="btnMem" title="记忆面板：查看 / 修正 / 撤回小星记住的事">🗂</button>
+      <button class="gear" id="btnClear" title="清空聊天窗口（记忆和识海不动）">🧹</button>
       <button class="gear" id="btnSettings" title="API Key 等设置">⚙</button>
     </div>
   </header>
@@ -30,13 +31,22 @@
   <section class="chat" id="chat"></section>
 
   <footer class="composer">
-    <textarea id="input" rows="1" placeholder="跟小星说点什么…（Enter 发送，Shift+Enter 换行）"></textarea>
-    <button id="btnAssoc" class="assoc" title="拿输入框里的话题做联想：激活扩散 + 联想循环">🧠</button>
-    <button id="btnSend" class="send">发送</button>
+    <div class="pic-preview" id="picPreview" hidden>
+      <img alt="预览">
+      <button class="pic-x" title="移除图片">✕</button>
+    </div>
+    <div class="composer-row">
+      <textarea id="input" rows="1" placeholder="跟小星说点什么…（Enter 发送，Shift+Enter 换行，可配图）"></textarea>
+      <button id="btnPic" class="assoc" title="发一张图片给小星看（他会看到并记住）">📷</button>
+      <button id="btnAssoc" class="assoc" title="拿输入框里的话题做联想：激活扩散 + 联想循环">🧠</button>
+      <button id="btnSend" class="send">发送</button>
+    </div>
+    <input type="file" id="filePic" accept="image/*" hidden>
   </footer>
   <div class="foot-note">
     记忆与情绪在本地（<code>data/xiaoxing.db</code>）·
-    <span id="llmState">检查 API Key…</span>
+    <span id="llmState">检查 API Key…</span> ·
+    <span id="ttsState">语音…</span>
   </div>
 </main>
 
